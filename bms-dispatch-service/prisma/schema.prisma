@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model DispatchAssignment {
+  id           String   @id @db.Uuid
+  bookingUuid  String   @unique @map("booking_uuid") @db.Uuid
+  serviceDate  String   @map("service_date")
+  dispatchTime String?  @map("dispatch_time") @db.VarChar(20)
+  garage       String?  @db.VarChar(120)
+  deliveryType String?  @map("delivery_type") @db.VarChar(20)
+  vehicleId    String?  @map("vehicle_id") @db.Uuid
+  driverId     String?  @map("driver_id") @db.Uuid
+  helperIds    String[] @default([]) @map("helper_ids")
+  state        String   @default("LEGACY_IMPORTED") @db.VarChar(32)
+  confirmCommandId String? @map("confirm_command_id") @db.Uuid
+  releaseCommandId String? @map("release_command_id") @db.Uuid
+  releaseBookingVersion Int? @map("release_booking_version")
+  bookingVersion Int? @map("booking_version")
+  lastError String? @map("last_error")
+  createdAt    DateTime @map("created_at") @db.Timestamptz(6)
+  updatedAt    DateTime @map("updated_at") @db.Timestamptz(6)
+
+  @@index([vehicleId])
+  @@index([driverId])
+  @@map("dispatch_assignments")
+}
+
+model DispatchJobOrder {
+  id                  String   @id @db.Uuid
+  jobOrderNo          String   @unique @map("job_order_no") @db.VarChar(50)
+  bookingUuid         String   @unique @map("booking_uuid") @db.Uuid
+  bookingIdAlias      String   @unique @map("booking_id_alias") @db.VarChar(50)
+  client              String   @db.VarChar(200)
+  serviceDate         String   @map("service_date")
+  truck               String?  @db.VarChar(50)
+  team                String?  @db.VarChar(100)
+  totalAmount         Decimal? @map("total_amount") @db.Decimal(10, 2)
+  status              String   @db.VarChar(20)
+  state               String   @default("LEGACY_IMPORTED") @db.VarChar(32)
+  needsUpdate         Boolean  @default(false) @map("needs_update")
+  generatedAt         DateTime @map("generated_at") @db.Timestamptz(6)
+  createdAt           DateTime @map("created_at") @db.Timestamptz(6)
+  updatedAt           DateTime @map("updated_at") @db.Timestamptz(6)
+
+  @@index([status])
+  @@map("dispatch_job_orders")
+}
+
+model ApprovalEventReceipt {
+  eventId   String   @id @map("event_id") @db.Uuid
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("approval_event_receipts")
+}
+
+// Temporary display-only sample fleet used when a real fleet list has not been provided.
+// These rows are never used by assignment commands or booking scheduling.
+model VehicleAvailabilitySampleVehicle {
+  id                String   @id @db.Uuid
+  plateNumber       String   @unique @map("plate_number") @db.VarChar(20)
+  alias             String   @db.VarChar(120)
+  truckTypeId       String   @map("truck_type_id") @db.VarChar(80)
+  brand             String?  @db.VarChar(80)
+  model             String?  @db.VarChar(100)
+  capacityKg        Int?     @map("capacity_kg")
+  dimensions        String   @db.VarChar(120)
+  requiredHelpersMin Int    @map("required_helpers_min")
+  requiredHelpersMax Int    @map("required_helpers_max")
+  status            String   @db.VarChar(32)
+  statusReason      String?  @map("status_reason") @db.Text
+  statusSince       String?  @map("status_since") @db.VarChar(40)
+  expectedBackAt    String?  @map("expected_back_at") @db.VarChar(40)
+  statusRemarks     String?  @map("status_remarks") @db.Text
+  crew              Json
+  currentAssignment Json?    @map("current_assignment")
+  upcomingSchedule  Json     @default("[]") @map("upcoming_schedule")
+
+  @@map("vehicle_availability_sample_vehicles")
+}
+
+model Helper {
+  id               String   @id @default(uuid()) @db.Uuid
+  empId            String   @unique @map("emp_id") @db.VarChar(40)
+  name             String   @db.VarChar(100)
+  initials         String?  @db.VarChar(10)
+  contact          String?  @db.VarChar(80)
+  email            String?  @db.VarChar(160)
+  crewStatus       String   @default("Available") @map("crew_status") @db.VarChar(40)
+  totalTrips       Int      @default(0) @map("total_trips")
+  joinDate         DateTime? @map("join_date") @db.Date
+  emergencyName    String?  @map("emergency_name") @db.VarChar(160)
+  emergencyContact String?  @map("emergency_contact") @db.VarChar(80)
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  @@map("helpers")
+}
+
+model AuditEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  actorId   String   @map("actor_id") @db.Uuid
+  role      String?  @db.VarChar(40)
+  action    String   @db.VarChar(100)
+  path      String   @db.VarChar(500)
+  ipAddress String?  @map("ip_address") @db.VarChar(45)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt])
+  @@map("audit_events")
+}

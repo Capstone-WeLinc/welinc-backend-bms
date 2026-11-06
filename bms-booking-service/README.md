@@ -1,0 +1,7 @@
+# BMS Booking service
+
+This native NestJS API owns bookings, the three BMS booking catalogs, external Welinc booking mappings, and the signed inbound webhook ledger in its own PostgreSQL database on host port `5434`. The API listens on `3002` when started by the root launcher. Public calls arrive through the BMS gateway on `3005`.
+
+`GET/POST /booking`, `GET/PUT /booking/:id`, and `/bms/config/{booking-services,services-offered,protective-materials}` serve the BMS UI. `POST /integrations/welinc/bookings` verifies exact-body HMAC signatures and applies valid create, edit, and cancel events with event deduplication. `GET /internal/booking`, `GET /internal/booking/:id`, and `POST /internal/booking/:id/commands` support service coordination with `BMS_INTERNAL_SERVICE_KEY`. Commands require a canonical UUID, expected version, and idempotent command ID.
+
+Start the full stack with the root `bms-start.bat` or `start.sh`. For manual service work, copy `.env.example` to `.env`, set the local Auth `JWT_SECRET`, a shared `BMS_INTERNAL_SERVICE_KEY` of at least 32 characters, and your own webhook test secret. Then run `npm ci`, `npx prisma migrate deploy`, and `npm run start:dev`. Use `npm run typecheck` and `npm run build` for verification. The webhook sender contract is in the root [Welinc integration guide](../../WELINC_TO_BMS_WEBHOOK_GUIDE.md); the sender remains the Welinc group's responsibility.

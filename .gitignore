@@ -1,45 +1,12 @@
-# Dependencies
+﻿# welinc-backend-bms
 node_modules/
-/npm-debug.log
-/yarn-error.log
-/pnpm-debug.log
-
-# Build output
-/dist
-/build
-/coverage
-
-# IDEs and editors
-/.idea
-/.vscode
-/*.suo
-/*.ntvs*
-/*.njsproj
-/*.sln
-/*.sw?
-
-# OS files
-.DS_Store
-Thumbs.db
-
-# Environment variables
+dist/
 .env
-.env.local
-.env.*.local
-.env.production
-.env.development
-.env.staging
-
-# Prisma
-/generated/prisma
-
-# Logs
+.env.*
+!.env.example
+*.db
+*.sqlite
+*.sqlite3
 *.log
-
-# Test files (optional, depende sa inyo)
-test-auth-flow.js
-build-errors.txt
-api-tests.http
-
-# Dev/diagnostic scripts (not part of the application)
-scripts/verify-vrms-sprints.ts
+*.tmp.cjs
+coverage/

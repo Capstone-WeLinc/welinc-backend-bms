@@ -1,0 +1,12 @@
+{
+  "name": "bms-analytics-projection",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env worker.mjs",
+    "once": "node --env-file=.env worker.mjs --once"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": { "pg": "^8.21.0" }
+}
