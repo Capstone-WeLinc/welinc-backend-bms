@@ -3,7 +3,7 @@ import { BadRequestException, ConflictException, Injectable, ServiceUnavailableE
 export type BookingRecord = {
   id: string; bookingId: string; bookingNo: string; client: string; service: string;
   date: string; status: string; version: number; amount: string | number | null;
-  operationalHold?: boolean; paymentHold?: boolean;
+  operationalHold?: boolean; paymentHold?: boolean; permitRequired?: boolean;
   pickupAddress: string | null; deliveryAddress: string | null; preferredTime: string | null;
 };
 @Injectable()

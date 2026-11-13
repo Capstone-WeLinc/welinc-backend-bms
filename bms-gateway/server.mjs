@@ -68,11 +68,12 @@ async function serveAudit(req, res, search) {
     // `action` is a "|"-separated list of verbs; a row matches when its action starts with one of them.
     const verbs = String(params.get('action') || '').toLowerCase().split('|').map((verb) => verb.trim()).filter(Boolean);
     const query = String(params.get('search') || '').toLowerCase();
+    const role = String(params.get('role') || '').toUpperCase();
     const from = params.get('from') ? new Date(`${params.get('from')}T00:00:00+08:00`).getTime() : -Infinity;
     const to = params.get('to') ? new Date(`${params.get('to')}T23:59:59.999+08:00`).getTime() : Infinity;
     const rows = source.rows.filter((item) => {
       const time = new Date(item.createdAt).getTime();
-      return time >= from && time <= to && (!verbs.length || verbs.some((verb) => String(item.action).toLowerCase().startsWith(verb))) &&
+      return time >= from && time <= to && (!role || String(item.role || '').toUpperCase() === role) && (!verbs.length || verbs.some((verb) => String(item.action).toLowerCase().startsWith(verb))) &&
         (!query || [item.action, item.userName, item.email].some((value) => String(value).toLowerCase().includes(query)));
     }).sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     const page = Math.max(1, Number(params.get('page')) || 1);
