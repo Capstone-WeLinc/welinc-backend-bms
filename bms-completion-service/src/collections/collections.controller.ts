@@ -51,6 +51,18 @@ export class CollectionsController {
   @Get('daily-sales/summary') @BmsRoles('ADMIN', 'CUSTOMER_SUPPORT')
   summary(@Query('date') date?: string) { return this.collections.summary(date); }
 
+  @Get('daily-sales/drafts') @BmsRoles('ADMIN', 'CUSTOMER_SUPPORT')
+  drafts(@Req() request: ActorRequest) {
+    const roles = (request as ActorRequest & { bmsIdentity?: { roles?: Array<{ role: string; system: string }> } }).bmsIdentity?.roles ?? [];
+    const admin = roles.some((item) => item.system === 'BMS' && item.role === 'ADMIN');
+    return this.collections.worklist(actor(request), admin);
+  }
+
+  @Post('daily-sales/submit-collections') @BmsRoles('CUSTOMER_SUPPORT')
+  submitDrafts(@Body() body: Record<string, unknown>, @Req() request: ActorRequest) {
+    return this.collections.submitDrafts(body ?? {}, actor(request));
+  }
+
   @Post('daily-sales/submit') @BmsRoles('CUSTOMER_SUPPORT', 'ADMIN')
   submit(@Query('date') date: string, @Req() request: ActorRequest) { return this.collections.submit(date, actor(request)); }
 }

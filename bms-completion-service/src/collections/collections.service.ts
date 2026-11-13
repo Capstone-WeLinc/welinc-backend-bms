@@ -22,6 +22,21 @@ function amount(value: unknown) {
   return new Prisma.Decimal(text);
 }
 
+/** Maps a booking's requested payment method onto a collection method, when it is clear. */
+function suggestedMethod(value?: string | null) {
+  const text = String(value ?? '').toLowerCase();
+  if (/gcash/.test(text)) return 'GCash';
+  if (/xendit/.test(text)) return 'Xendit';
+  if (/\bbdo\b|bank/.test(text)) return 'BDO';
+  if (/\bcod\b|cash/.test(text)) return 'Cash';
+  return null;
+}
+
+export type CollectionDraft = {
+  bookingUuid: string; bookingId: string; bookingNo: string; clientName: string; service: string;
+  completedOn: string; amount: number; method: string | null; reference: string;
+};
+
 @Injectable()
 export class CollectionsService {
   constructor(private readonly prisma: PrismaService, private readonly bookings: BookingClient, private readonly dispatch: DispatchClient) {}
@@ -128,6 +143,100 @@ export class CollectionsService {
     return bookings.filter((booking) => booking.status !== 'Cancelled' &&
       dispatchReady.has(booking.id) && postServiceComplete.has(booking.id) &&
       (booking.amount === null || (paidByBooking.get(booking.id) ?? 0) < cents(booking.amount)));
+  }
+
+  /**
+   * Daily Sales rows generated from verified Post-Service records: bookings ready for collection that have
+   * no collection awaiting approval, with their remaining balance. Nothing is stored until CS submits them.
+   */
+  async drafts(actor?: string): Promise<CollectionDraft[]> {
+    const eligible = await this.eligibleBookings();
+    if (!eligible.length) return [];
+    const ids = eligible.map((booking) => booking.id);
+    const [active, work] = await Promise.all([
+      this.prisma.collection.findMany({ where: { bookingUuid: { in: ids }, status: { in: ['PENDING', 'VERIFYING', 'VERIFIED'] } } }),
+      this.prisma.workOutcome.findMany({ where: { bookingUuid: { in: ids } }, select: { bookingUuid: true, finalizedAt: true, updatedAt: true, finalizedBy: true } }),
+    ]);
+    const refunds = await this.prisma.refund.findMany({
+      where: { collectionId: { in: active.filter((item) => item.status === 'VERIFIED').map((item) => item.id) }, projectionState: 'SYNCED' },
+    });
+    const awaitingApproval = new Set(active.filter((item) => item.status !== 'VERIFIED').map((item) => item.bookingUuid));
+    const completedOn = new Map(work.map((item) => [item.bookingUuid, manilaDate(item.finalizedAt ?? item.updatedAt)]));
+    // A record belongs to the CS user who verified its Post-Service; older records without one are shared.
+    const verifiedBy = new Map(work.map((item) => [item.bookingUuid, item.finalizedBy]));
+    return eligible
+      .filter((booking) => booking.amount !== null && !awaitingApproval.has(booking.id) &&
+        (!actor || !verifiedBy.get(booking.id) || verifiedBy.get(booking.id) === actor))
+      .map((booking) => {
+        const collected = active.filter((item) => item.bookingUuid === booking.id)
+          .reduce((sum, item) => sum + cents(item.amount), 0) -
+          refunds.filter((item) => active.some((c) => c.id === item.collectionId && c.bookingUuid === booking.id))
+            .reduce((sum, item) => sum + cents(item.amount), 0);
+        return {
+          bookingUuid: booking.id, bookingId: booking.bookingId, bookingNo: booking.bookingNo,
+          clientName: booking.client, service: booking.service,
+          completedOn: completedOn.get(booking.id) ?? booking.date,
+          amount: (cents(booking.amount!) - collected) / 100,
+          method: suggestedMethod(booking.requestedPaymentMethod), reference: booking.bookingNo,
+        };
+      })
+      .filter((row) => row.amount > 0)
+      .sort((a, b) => b.completedOn.localeCompare(a.completedOn));
+  }
+
+  /**
+   * Submits every Daily Sales draft as a pending collection for Admin approval. CS may set a method or
+   * reference per booking; drafts without a valid method are left for CS to complete.
+   */
+  async submitDrafts(input: Record<string, unknown>, actor: string) {
+    const overrides = new Map<string, { method?: unknown; reference?: unknown }>();
+    for (const item of Array.isArray(input.items) ? input.items : []) {
+      if (item && typeof item === 'object' && typeof (item as { bookingUuid?: unknown }).bookingUuid === 'string') {
+        overrides.set((item as { bookingUuid: string }).bookingUuid, item as { method?: unknown; reference?: unknown });
+      }
+    }
+    const submitted: string[] = [];
+    const skipped: Array<{ bookingNo: string; reason: string }> = [];
+    for (const draft of await this.drafts(actor)) {
+      const override = overrides.get(draft.bookingUuid);
+      const method = String(override?.method || draft.method || '');
+      const reference = String(override?.reference ?? '').trim() || draft.reference;
+      if (!METHODS.includes(method)) {
+        skipped.push({ bookingNo: draft.bookingNo, reason: 'Choose a payment method' });
+        continue;
+      }
+      try {
+        // create() re-checks readiness and the remaining balance under the booking lock, so a double submit cannot add a duplicate.
+        await this.create({
+          idempotencyKey: randomUUID(), bookingId: draft.bookingUuid, amount: draft.amount.toFixed(2), method, reference,
+        }, actor);
+        submitted.push(draft.bookingNo);
+      } catch (error) {
+        if (!(error instanceof ConflictException || error instanceof BadRequestException)) throw error;
+        skipped.push({ bookingNo: draft.bookingNo, reason: error.message });
+      }
+    }
+    if (!submitted.length && !skipped.length) throw new ConflictException('There are no records to submit');
+    return { submitted: submitted.length, bookingNos: submitted, skipped };
+  }
+
+  /** The CS user's Daily Sales worklist: drafts to submit, plus their collections awaiting Admin approval. */
+  async worklist(actor: string, admin: boolean) {
+    const [ready, awaiting] = await Promise.all([
+      this.drafts(admin ? undefined : actor),
+      this.prisma.collection.findMany({
+        where: { status: { in: ['PENDING', 'VERIFYING'] }, ...(admin ? {} : { recordedBy: actor }) },
+        orderBy: { submittedAt: 'desc' },
+      }),
+    ]);
+    return {
+      ready,
+      awaiting: awaiting.map((item) => ({
+        id: item.id, bookingId: item.bookingIdAlias, bookingNo: item.bookingNo, clientName: item.clientName,
+        amount: Number(item.amount), method: item.method, reference: item.reference,
+        submittedOn: manilaDate(item.submittedAt),
+      })),
+    };
   }
 
   pending() { return this.prisma.collection.findMany({ where: { status: { in: ['PENDING', 'VERIFYING'] } }, orderBy: { createdAt: 'desc' } }); }
@@ -332,9 +441,6 @@ export class CollectionsService {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`booking:${lockBooking}`}, 0))`;
         const current = await tx.collection.findUniqueOrThrow({ where: { id } });
         if (current.status !== 'PENDING') return current;
-        if (await tx.dailySubmission.findUnique({ where: { date: current.businessDate } })) {
-          throw new ConflictException('Sales for this date were already submitted');
-        }
         const reserved = await tx.collection.findMany({ where: { bookingUuid: current.bookingUuid, status: { in: ['VERIFIED', 'VERIFYING'] } } });
         const refunded = await tx.refund.findMany({ where: { collectionId: { in: reserved.map((item) => item.id) }, projectionState: 'SYNCED' } });
         const paidCents = reserved.reduce((sum, item) => sum + cents(item.amount), 0) - refunded.reduce((sum, item) => sum + cents(item.amount), 0);
@@ -475,12 +581,11 @@ export class CollectionsService {
   async sales(submittedOnly = false) {
     const collections = await this.prisma.collection.findMany({ where: { status: 'VERIFIED' }, orderBy: { collectedAt: 'desc' } });
     const refunds = await this.prisma.refund.findMany({ where: { projectionState: 'SYNCED' }, orderBy: { refundedAt: 'desc' } });
-    const submissions = await this.prisma.dailySubmission.findMany();
-    const submitted = new Set(submissions.map((item) => item.date));
-    const rows = collections.map((item) => this.saleRow(item, cents(item.amount), submitted.has(item.businessDate)));
+    // Collections now reach Admin only through the CS Submit step, so every verified one is a submitted sale.
+    const rows = collections.map((item) => this.saleRow(item, cents(item.amount), true));
     for (const refund of refunds) {
       const original = collections.find((item) => item.id === refund.collectionId);
-      if (original) rows.push(this.saleRow(original, -cents(refund.amount), submitted.has(refund.businessDate), refund.id, refund.businessDate, refund.reason));
+      if (original) rows.push(this.saleRow(original, -cents(refund.amount), true, refund.id, refund.businessDate, refund.reason));
     }
     return rows.filter((row) => !submittedOnly || row.reportStatus === 'Submitted').sort((a, b) => b.date.localeCompare(a.date));
   }
