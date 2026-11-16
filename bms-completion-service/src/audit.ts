@@ -1,6 +1,5 @@
 import { CallHandler, Controller, ExecutionContext, Get, Headers, Injectable, NestInterceptor, UnauthorizedException } from '@nestjs/common';
 import { APP_INTERCEPTOR } from '@nestjs/core';
-import { JwtService } from '@nestjs/jwt';
 import { timingSafeEqual } from 'node:crypto';
 import { Observable, catchError, concatMap, from, map, of } from 'rxjs';
 import { PrismaService } from './prisma.service';
@@ -28,17 +27,15 @@ export class AuditController {
 
 @Injectable()
 export class AuditInterceptor implements NestInterceptor {
-  constructor(private readonly prisma: PrismaService, private readonly jwt: JwtService) {}
+  constructor(private readonly prisma: PrismaService) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const request = context.switchToHttp().getRequest<{ method?: string; originalUrl?: string; headers?: Record<string, string>; ip?: string; body?: unknown }>();
+    const request = context.switchToHttp().getRequest<{ method?: string; originalUrl?: string; headers?: Record<string, string>; ip?: string; body?: unknown; bmsIdentity?: { sub: string; roles: {system:string;role:string}[] } }>();
     const method = String(request.method ?? '').toUpperCase();
     const path = String(request.originalUrl ?? '').split('?')[0];
     if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) || path.startsWith('/internal/')) return next.handle();
-    const token = String(request.headers?.authorization ?? '').replace(/^Bearer\s+/i, '');
-    let claims: { sub?: string; roles?: { system: string; role: string }[] };
-    try { claims = this.jwt.verify(token, { secret: process.env.JWT_SECRET, algorithms: ['HS256'] }); }
-    catch { return next.handle(); }
+    const claims = request.bmsIdentity;
+    if (!claims) return next.handle();
     if (!claims.sub || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.sub)) return next.handle();
     const role = claims.roles?.find((item) => item.system === 'BMS')?.role ?? null;
     return next.handle().pipe(concatMap((result) => {

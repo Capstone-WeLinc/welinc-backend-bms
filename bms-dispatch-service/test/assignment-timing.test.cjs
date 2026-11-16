@@ -199,7 +199,7 @@ test('travel lookups are reused so repeat checks do not pay Google again', async
   assert.equal(run.lookups.length, 2);
 });
 
-test('a sample that joined the real fleet appears once, with no made-up crew', async () => {
+test('only authoritative fleet vehicles appear, with no sample-only vehicles or made-up crew', async () => {
   const sample = (plateNumber) => ({
     id: `sample-${plateNumber}`, plateNumber, alias: 'Unit', brand: null, model: null, truckTypeId: '10ft. Closed Van', capacityKg: 1500,
     dimensions: '', requiredHelpersMin: 1, requiredHelpersMax: 1, status: 'assigned', crew: [{ id: 'x', name: 'Made Up', role: 'Driver' }],
@@ -215,8 +215,8 @@ test('a sample that joined the real fleet appears once, with no made-up crew', a
     vehicles: async () => [{ id: 'real-id', plateNumber: 'NCF-7716', status: 'AVAILABLE', capacity: '0', requiredHelpers: 2 }],
     drivers: async () => [],
   };
-  const rows = await new FleetService(prisma, { list: async () => [] }, provider).vehicleAvailability();
-  assert.deepEqual(rows.map((row) => row.plateNumber), ['NCF-7716', 'ONLY-SAMPLE']);
+  const rows = await new FleetService(prisma, { lookup: async()=>new Map() }, { list: async () => [] }, provider).vehicleAvailability();
+  assert.deepEqual(rows.map((row) => row.plateNumber), ['NCF-7716']);
   assert.equal(rows[0].id, 'real-id');
   assert.equal(rows[0].driver, null);
   assert.equal(rows[0].currentAssignment, null);
@@ -238,7 +238,7 @@ test('trucks and crew only show as busy on the date they are booked', async () =
       vehicles: async () => [{ id: vehicleId, status: 'AVAILABLE' }],
       drivers: async () => [{ id: driverId, status: 'Available' }],
     };
-    const service = new FleetService(prisma, {}, provider);
+    const service = new FleetService(prisma, { lookup: async()=>new Map() }, {}, provider);
     return { vehicle: (await service.vehicles())[0].isAssigned, driver: (await service.drivers())[0].status, helper: (await service.helpers())[0].status };
   };
   assert.deepEqual(await run(today), { vehicle: true, driver: 'On Duty', helper: 'On Duty' });

@@ -1,0 +1,12 @@
+{
+  "name": "welinc-backend-bms",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BMS backend processes and local integration setup",
+  "engines": { "node": "24.x" },
+  "scripts": {
+    "postinstall": "node scripts/prepare-local.mjs",
+    "prepare:local": "node scripts/prepare-local.mjs",
+    "test:live": "node scripts/check-live.mjs"
+  }
+}

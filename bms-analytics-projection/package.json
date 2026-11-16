@@ -4,9 +4,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node --env-file=.env worker.mjs",
-    "once": "node --env-file=.env worker.mjs --once"
+    "start": "node worker.mjs",
+    "start:dev": "node --watch worker.mjs",
+    "once": "node worker.mjs --once"
   },
-  "engines": { "node": ">=20" },
-  "dependencies": { "pg": "^8.21.0" }
+  "engines": {
+    "node": "24.x"
+  },
+  "dependencies": {
+    "pg": "^8.21.0"
+  }
 }

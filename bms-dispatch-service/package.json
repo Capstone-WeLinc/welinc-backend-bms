@@ -7,16 +7,16 @@
     "start": "node dist/src/main.js",
     "start:dev": "nest start --watch",
     "typecheck": "tsc --noEmit",
-    "seed:crew": "node --env-file=.env scripts/seed-crew.mjs",
-    "seed:trucks": "node --env-file=.env scripts/seed-trucks.mjs",
+    "seed:crew": "node scripts/seed-crew.mjs",
     "test": "npm run build && node --test test/fleet-service.contract.test.cjs test/assignment-timing.test.cjs",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test:auth": "jest --runInBand --testPathPatterns=\"auth|session\"",
+    "seed": "node scripts/seed-crew.mjs"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
-    "@nestjs/jwt": "^11.0.0",
     "@nestjs/platform-express": "^11.0.1",
     "@prisma/adapter-pg": "7.8.0",
     "@prisma/client": "7.8.0",
@@ -24,7 +24,8 @@
     "class-validator": "^0.15.1",
     "pg": "^8.21.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "jose": "^6.0.0"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
@@ -33,6 +34,33 @@
     "@types/pg": "^8.20.0",
     "dotenv": "^17.4.2",
     "prisma": "7.8.0",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "jest": "^30.0.0",
+    "@types/jest": "^30.0.0",
+    "ts-jest": "^29.4.15"
+  },
+  "engines": {
+    "node": "24.x"
+  },
+  "jest": {
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "testEnvironment": "node",
+    "transform": {
+      "^.+\\.(t|j)s$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "allowJs": true,
+            "module": "commonjs",
+            "moduleResolution": "node10",
+            "resolvePackageJsonExports": false
+          }
+        }
+      ]
+    },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!jose/)"
+    ]
   }
 }

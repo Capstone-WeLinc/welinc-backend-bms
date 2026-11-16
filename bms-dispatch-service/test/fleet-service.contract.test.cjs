@@ -58,7 +58,7 @@ function dependencies(provider) {
 test('BMS fleet contract maps provider data and delegates full driver edits', async () => {
   const provider = new FakeFleetProvider();
   const deps = dependencies(provider);
-  const service = new FleetService(deps.prisma, deps.bookings, provider);
+  const service = new FleetService(deps.prisma, { lookup: async()=>new Map() }, deps.bookings, provider);
 
   assert.deepEqual(await service.garages(), [{ id: 'garage-1', name: 'Test Garage' }]);
   assert.equal((await service.vehicles())[0].isAssigned, true);
@@ -83,18 +83,30 @@ test('BMS fleet contract maps provider data and delegates full driver edits', as
   assert.deepEqual(await service.checkAssignment(vehicleId, driverId, [helperId]), { plateNumber: 'TEST-001' });
 });
 
+test('crew edits allow a seeded helper to keep or clear optional contact fields', async () => {
+  const provider = new FakeFleetProvider();
+  const deps = dependencies(provider);
+  let saved;
+  deps.prisma.helper.findUnique = async () => ({ id: helperId, isActive: true });
+  deps.prisma.helper.update = async ({ data }) => { saved = data; };
+  const service = new FleetService(deps.prisma, { lookup: async () => new Map() }, deps.bookings, provider);
+  await service.updateHelper(helperId, { fullName: 'Sample Helper', contact: '', email: '', emergencyName: '', emergencyContact: '', joinDate: '' });
+  assert.equal(saved.name, 'Sample Helper');
+  for (const field of ['contact', 'email', 'emergencyName', 'emergencyContact', 'joinDate']) assert.equal(saved[field], null);
+});
+
 test('BMS fleet contract propagates provider outages instead of hiding them', async () => {
   const provider = new FakeFleetProvider();
   provider.assignmentResources = async () => { throw new ServiceUnavailableException('Fake fleet provider unavailable'); };
   const deps = dependencies(provider);
-  const service = new FleetService(deps.prisma, deps.bookings, provider);
+  const service = new FleetService(deps.prisma, { lookup: async()=>new Map() }, deps.bookings, provider);
   await assert.rejects(service.checkAssignment(vehicleId, driverId, [helperId]), ServiceUnavailableException);
 });
 
 test('vehicle availability contains only real fleet vehicles and embeds confirmed crew and assignment details', async () => {
   const provider = new FakeFleetProvider();
   const deps = dependencies(provider);
-  const service = new FleetService(deps.prisma, deps.bookings, provider);
+  const service = new FleetService(deps.prisma, { lookup: async()=>new Map() }, deps.bookings, provider);
   const rows = await service.vehicleAvailability();
   const real = rows.find((row) => row.id === vehicleId);
   assert.equal(real.driver.name, 'Demo Driver');
@@ -108,7 +120,7 @@ test('vehicle availability contains only real fleet vehicles and embeds confirme
 test('under maintenance and repair vehicles cannot be assigned', async () => {
   const provider = new FakeFleetProvider();
   const deps = dependencies(provider);
-  const service = new FleetService(deps.prisma, deps.bookings, provider);
+  const service = new FleetService(deps.prisma, { lookup: async()=>new Map() }, deps.bookings, provider);
   for (const status of ['UNDER_MAINTENANCE', 'UNDER_REPAIR']) {
     provider.vehicleStatus = status;
     await assert.rejects(service.checkAssignment(vehicleId, driverId, [helperId]), /Vehicle is unavailable/);

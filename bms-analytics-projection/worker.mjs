@@ -1,12 +1,12 @@
+import { createServer } from 'node:http';
 import pg from 'pg';
 
 const url = process.env.ANALYTICS_READ_MODEL_DATABASE_URL;
-if (!url || !['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname)) {
-  throw new Error('Analytics projection requires the disposable local shared database');
-}
+if (!url) throw new Error('ANALYTICS_READ_MODEL_DATABASE_URL is required');
 const key = process.env.BMS_INTERNAL_SERVICE_KEY;
 if (!key || key.length < 32) throw new Error('BMS_INTERNAL_SERVICE_KEY is required');
 const pool = new pg.Pool({ connectionString: url });
+let lastSuccess=0;
 
 async function source(root, path) {
   const response = await fetch(new URL(path, root), {
@@ -20,9 +20,9 @@ function moneyCents(value) { return Math.round(Number(value ?? 0) * 100); }
 
 export async function projectOnce() {
   const [bookings, assignments, completion] = await Promise.all([
-    source(process.env.BOOKING_API_URL || 'http://127.0.0.1:3002', '/internal/booking'),
-    source(process.env.DISPATCH_API_URL || 'http://127.0.0.1:3003', '/internal/dispatch/assignments'),
-    source(process.env.COMPLETION_API_URL || 'http://127.0.0.1:3004', '/internal/completion/read-model'),
+    source(process.env.BOOKING_API_URL || 'http://127.0.0.1:3021', '/internal/booking'),
+    source(process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022', '/internal/dispatch/assignments'),
+    source(process.env.COMPLETION_API_URL || 'http://127.0.0.1:3023', '/internal/completion/read-model'),
   ]);
   const assignmentByBooking = new Map(assignments.map((row) => [row.bookingUuid, row]));
   const workByBooking = new Map(completion.work.map((row) => [row.bookingUuid, row]));
@@ -108,9 +108,10 @@ export async function projectOnce() {
 if (process.argv[1]?.endsWith('worker.mjs')) {
   const once = process.argv.includes('--once');
   const run = async () => {
-    try { console.log(JSON.stringify({ status: 'ok', ...await projectOnce() })); }
-    catch (error) { console.error(error); if (once) process.exitCode = 1; }
+    try { const result=await projectOnce();lastSuccess=Date.now();console.log(JSON.stringify({ status: 'ok', ...result })); }
+    catch (error) { console.error('Analytics projection failed'); if (once) process.exitCode = 1; }
   };
+  if (!once) createServer((_req,res)=>{const ok=lastSuccess>0 && Date.now()-lastSuccess<Math.max(30000,3*Number(process.env.PROJECTION_INTERVAL_MS??10000));res.writeHead(ok?200:503,{'content-type':'application/json'});res.end(JSON.stringify({status:ok?'ok':'unavailable'}));}).listen(Number(process.env.PORT??3024),'0.0.0.0');
   await run();
   if (!once) {
     const interval = Math.max(1000, Number(process.env.PROJECTION_INTERVAL_MS) || 10000);

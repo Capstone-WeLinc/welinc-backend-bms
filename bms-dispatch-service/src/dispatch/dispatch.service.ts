@@ -137,7 +137,7 @@ export class DispatchService {
         driverName: driver?.fullName ?? 'Assigned driver',
         driverContact: driver?.contact ?? '',
         helperNames: assignedHelpers.map((helper) => helper.fullName),
-        vehicleLabel: vehicle ? `${vehicle.plateNumber} ${vehicle.alias ?? ''}`.trim() : '',
+        vehicleLabel: vehicle ? `${vehicle.plateNumber} ${vehicle.alias ?? ''}`.trim() : 'Unavailable vehicle',
       } : null,
       jobOrder: jobOrder ? { status: jobOrder.status, updatedAt: jobOrder.updatedAt.toISOString() } : null,
     };
@@ -268,7 +268,7 @@ export class DispatchService {
     const [vehicles, drivers, helpers] = await Promise.all([this.fleet.vehicles(), this.fleet.drivers(), this.fleet.helpers()]);
     return {
       dispatchTime, garage, deliveryType, vehicleId, driverId, helperIds: helperIds as string[],
-      vehicleLabel: vehicles.find((item) => item.id === vehicleId)?.plateNumber ?? vehicleId,
+      vehicleLabel: vehicles.find((item) => item.id === vehicleId)?.plateNumber ?? 'Unavailable vehicle',
       driverName: drivers.find((item) => item.id === driverId)?.fullName ?? driverId,
       helperNames: (helperIds as string[]).map((helperId) => helpers.find((item) => item.id === helperId)?.fullName ?? helperId),
     };
@@ -478,7 +478,7 @@ export class DispatchService {
     const updated = await this.prisma.dispatchJobOrder.update({ where: { id }, data: { status: 'Distributed', updatedAt: new Date() } });
     if (!alreadyDistributed) {
       const key = process.env.BMS_INTERNAL_SERVICE_KEY;
-      const root = process.env.BOOKING_API_URL || 'http://127.0.0.1:3002';
+      const root = process.env.BOOKING_API_URL || 'http://127.0.0.1:3021';
       if (key && key.length >= 32) {
         try {
           await fetch(new URL(`/internal/booking/${item.bookingUuid}/tracking-update`, root), {

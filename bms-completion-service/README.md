@@ -1,7 +1,18 @@
 # BMS Completion and Sales service
 
-This native NestJS API owns work outcomes, recorded collections, verified collections, linked refunds, and daily sales submissions in PostgreSQL on host port `5436`. It listens on `3004` when started by the root launcher. Public `/post-service`, `/collections`, and `/daily-sales` calls arrive through the gateway.
+NestJS service on 3023, with its owned PostgreSQL database on host port 5436.
+Browser `/bms/post-service`, `/bms/collections` and `/bms/daily-sales` requests
+arrive through the suite and BMS gateways. Shared auth's BMS tokens, session
+confirmation and existing BMS role restrictions protect operations.
 
-Work completion does not create payment. Customer Support or Admin records a collection with a snapshot of Dispatch's garage, plate, type, and team; Admin verifies or rejects it. Only verified collected amounts, including partial payments, enter daily sales. Refunds are linked reversing entries. Submission marks the selected Asia/Manila business date as submitted without creating a collection. Same-day submission and concurrent payment decisions are serialized in PostgreSQL. Booking receives versioned internal payment-hold commands. Admin can inspect and retry pending work at `GET /post-service/pending` and `POST /post-service/:bookingUuid/retry`, retry a verifying collection at `POST /collections/:id/verify`, and inspect/retry pending refunds at `GET /collections/refunds/pending` and `POST /collections/refunds/:id/retry`.
+Completion owns work outcomes, recorded and verified collections, linked
+refunds and daily sales submissions. Work completion does not create payment.
+Customer Support or Admin records collections; Admin verifies or rejects them.
+Only verified amounts, including partial payments and linked refund reversals,
+enter daily sales. Booking receives versioned internal payment-hold commands.
+Existing pending/retry endpoints and payment concurrency controls remain.
 
-Start the whole stack using the root launcher. For manual startup copy `.env.example` to `.env`, configure Booking URL, the local Auth JWT secret, and shared internal service key, then run `npm ci`, `npx prisma migrate deploy`, and `npm run start:dev`. Verify with `npm run typecheck` and `npm run build`. The root `scripts/smoke-gateway-flow.mjs` checks the public workflow through the gateway.
+Start with the workspace BMS Compose file after the shared stack. Configuration
+comes from the backend root environment; no auth database is queried. Use
+`npm run build` and `npm run test:auth` here. See [backend setup](../README.md)
+and the [BMS checklist](../../docs/context/bms/integration-checklist.md).

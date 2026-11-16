@@ -1,9 +1,28 @@
 # BMS Dispatch service
 
-This native NestJS API owns assignments, local BMS helpers, and job orders in PostgreSQL on host port `5435`. It listens on `3003` when started by the root launcher. Public `/scheduling`, `/job-order`, and `/bms/config/{vehicles,drivers,helpers,garages}` calls arrive through the gateway.
+NestJS service on 3022, with its owned PostgreSQL database on host port 5435.
+It owns assignments, drivers, helpers, vehicle dispatch profiles and job orders.
+Browser routes enter through `/bms/scheduling`, `/bms/dispatch`, `/bms/job-order`
+and `/bms/config` at the suite gateway. Shared BMS tokens, session confirmation
+and existing role restrictions protect operations.
 
-Assignment creates a pending record, checks the local fleet and conflicting holds, confirms Booking's operational hold using a versioned idempotent command, then confirms its own record and creates a job order. A confirmed assignment can be changed before distribution: Dispatch persists a release command, releases Booking's hold, then confirms the replacement. Admin may explicitly release un-distributed work for Welinc conflict review at `POST /dispatch/assignments/:bookingUuid/release`. Distributed or completed work requires operator review. Pending assignments and releases are visible at `GET /dispatch/assignments`; Operations or Admin can call `POST /dispatch/assignments/:bookingUuid/retry`. A recovered release leaves the booking ready for a new assignment. Distribution belongs to Dispatch. Payment and work outcomes belong to Completion.
+VMMS owns vehicles and garages. Dispatch calls its fleet API with a BMS service
+assertion and a `fleet.read` token for VMMS. Lists cache for 30 seconds;
+assignment fetches the vehicle fresh. Fleet outages fail with
+`503 FLEET_UNAVAILABLE`; unavailable/deleted vehicles fail assignment with
+`409 VEHICLE_UNAVAILABLE`. BMS keeps dispatch-only metadata locally and never
+reads another group's database. Driver/helper identities link to the suite
+manifest, temporary roles are excluded from pick lists, and daily directory
+checks anonymize erased linked identities.
 
-The local fleet adapter reads the vehicle, driver and garage tables in the shared WeLinc database and writes the driver fields required by the BMS editor there. BMS helpers live in Dispatch's own database. `BMS_PARTNER_DATABASE_URL` accepts loopback hosts only.
+The existing pending/confirmed/releasing assignment workflow, Booking holds,
+retry endpoints and unique active vehicle slot guard remain. Distributed or
+completed work still requires operator review. Payment and work outcomes
+belong to Completion.
 
-Start the whole stack using the root launcher. For manual startup copy `.env.example` to `.env`, configure Booking URL, the local Auth JWT secret, shared internal service key, and local partner database URL, then run `npm ci`, `npx prisma migrate deploy`, and `npm run start:dev`. Verify with `npm run typecheck` and `npm run build`.
+Start with the workspace BMS Compose file after the shared stack. Configuration
+comes from the backend root environment. `npm test` checks existing fleet and
+assignment behavior; `npx jest --runInBand` checks auth and the VMMS consumer.
+The repeatable seed links 12 drivers and 20 helpers without replacing edited
+profiles. See [backend setup](../README.md) and the
+[BMS checklist](../../docs/context/bms/integration-checklist.md).
