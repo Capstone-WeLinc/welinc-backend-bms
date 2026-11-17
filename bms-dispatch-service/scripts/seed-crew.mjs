@@ -1,3 +1,5 @@
+import { assertSeedAllowed } from './seed-guard.mjs';
+assertSeedAllowed();
 import { readFile } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
@@ -15,9 +17,17 @@ const db = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await db.connect();
 try {
   await db.query("BEGIN");
+  // Do not silently attach an edited/unlinked business profile to another identity.
+  for (const [table,group,prefix] of [['drivers',drivers,'DRV'],['helpers',helpers,'HLP']]) {
+    for (const [i,person] of group.entries()) {
+      const result=await db.query(`SELECT user_id,name FROM ${table} WHERE emp_id=$1`,[`${prefix}-${String(i+1).padStart(3,'0')}`]);
+      const row=result.rows[0];
+      if(row && ((row.user_id && row.user_id!==person.id) || (!row.user_id && row.name!==person.name)))throw new Error('CREW_IDENTITY_CONFLICT_EXISTING_PROFILE_PRESERVED');
+    }
+  }
   for (const [i, p] of drivers.entries())
     await db.query(
-      `INSERT INTO drivers(id,user_id,emp_id,name,initials,license_number,email,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT(emp_id) DO UPDATE SET user_id=COALESCE(drivers.user_id,EXCLUDED.user_id), name=CASE WHEN drivers.user_id IS NULL THEN EXCLUDED.name ELSE drivers.name END, email=CASE WHEN drivers.user_id IS NULL THEN EXCLUDED.email ELSE drivers.email END`,
+      `INSERT INTO drivers(id,user_id,emp_id,name,initials,license_number,email,updated_at) VALUES($1,$2,$3,$4,$5,$6,$7,now()) ON CONFLICT(emp_id) DO UPDATE SET user_id=COALESCE(drivers.user_id,EXCLUDED.user_id)`,
       [
         randomUUID(),
         p.id,
@@ -34,7 +44,7 @@ try {
     );
   for (const [i, p] of helpers.entries())
     await db.query(
-      `INSERT INTO helpers(id,user_id,emp_id,name,initials,email,updated_at) VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(emp_id) DO UPDATE SET user_id=COALESCE(helpers.user_id,EXCLUDED.user_id), name=CASE WHEN helpers.user_id IS NULL THEN EXCLUDED.name ELSE helpers.name END, email=CASE WHEN helpers.user_id IS NULL THEN EXCLUDED.email ELSE helpers.email END`,
+      `INSERT INTO helpers(id,user_id,emp_id,name,initials,email,updated_at) VALUES($1,$2,$3,$4,$5,$6,now()) ON CONFLICT(emp_id) DO UPDATE SET user_id=COALESCE(helpers.user_id,EXCLUDED.user_id)`,
       [
         randomUUID(),
         p.id,

@@ -153,3 +153,14 @@ model AuditEvent {
   @@index([createdAt])
   @@map("audit_events")
 }
+
+model DemoSeedRecord {
+ datasetKey String @map("dataset_key") @db.VarChar(60)
+ tableName String @map("table_name") @db.VarChar(60)
+ recordId String @map("record_id") @db.VarChar(80)
+ bookingUuid String @map("booking_uuid") @db.Uuid
+ rowHash String @map("row_hash") @db.Char(64)
+ @@id([tableName,recordId])
+ @@index([datasetKey,bookingUuid], map:"bms_demo_seed_records_dataset_idx")
+ @@map("bms_demo_seed_records")
+}
