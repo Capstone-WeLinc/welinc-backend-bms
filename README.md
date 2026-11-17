@@ -23,7 +23,8 @@ Browser requests enter through `http://localhost:3000/bms/`. Sign in at
 file when absent, generates missing BMS internal/tracking secrets, and preserves
 existing configuration. It prints no secret values. The shared setup issues the
 `bms` client key. Names and local addresses are documented in `.env.example`.
-Every BMS process receives this root configuration through Compose.
+The five processes here receive this root configuration through Compose.
+The separate analytics API uses its own `bms-analytics` identity and environment.
 
 Booking, dispatch, completion and analytics each own a PostgreSQL database.
 There are no auth or fleet database connections. Dispatch owns drivers, helpers
@@ -38,7 +39,10 @@ webhooks retain their signature checks and original raw request bytes.
 
 ## Verification
 
-Run `npm ci`, `npm run build` and `npm run test:auth` inside the booking,
+From this root, run `npm ci`, `npm run bootstrap:ci`, `npm run audit:ci`,
+`npm run typecheck`, `npm run lint:ci`, `npm run build` and `npm test` to cover
+all five subprocesses. Alternatively run `npm ci`, `npm run build` and
+`npm run test:auth` inside the booking,
 dispatch and completion folders. Gateway uses `npm test` for its full
 verifier/session/proxy suite. Booking also has webhook/tracking tests
 (`npx jest --runInBand`). Dispatch has the existing workflow suite (`npm test`)
@@ -49,3 +53,23 @@ From this folder, `npm run test:live` checks live BMS routes and suite crew link
 using local seed accounts. Tokens stay in memory and test sessions are signed
 out. From the workspace, run `node scripts/check-system.mjs bms --static-only`.
 The lead owns the full suite checker, fleet parity and final sign-off.
+
+## Hosting and default seeders
+
+Each process has a `Dockerfile.prod` with a production runner and full-source
+`seed` target. The owning database migration command is `npx prisma migrate deploy`.
+Set `DB_POOL_MAX=2` for every database process. See the complete
+[hosting handoff](../docs/context/bms/hosting-handoff.md) for process settings,
+timers, images, staging jobs and provider-key delivery.
+
+After migrations, per-owner `npm run seed` commands install only missing
+catalogs/linked crew and preserve existing edits. From this root, `npm run seed`
+orchestrates the full 150-booking demo through all owners and projection.
+The running stack, actual VMMS fleet API and shared directory are required;
+it never fabricates trucks or auth accounts. Reruns resume the frozen dataset
+and preserve modified or deleted scenarios. All seed entrypoints reject
+production without the job-only `SEED_ALLOW=staging` override.
+
+`npm run test:seed:integration` checks isolated real BMS databases/services with
+controlled upstream contracts. It requires the hosting-check runner/seed images
+and BMS database containers; it never resets the application's databases.
