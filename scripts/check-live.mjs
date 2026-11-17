@@ -89,7 +89,7 @@ try {
   if (fleet.status === 503) {
     assert.equal(fleet.json.code, "FLEET_UNAVAILABLE");
     console.log(
-      "ok unavailable VMMS fails closed with FLEET_UNAVAILABLE (live fleet sign-off remains pending)",
+      "ok local VMMS is unavailable; fleet requests fail closed with FLEET_UNAVAILABLE",
     );
   } else {
     assert.equal(fleet.status, 200);

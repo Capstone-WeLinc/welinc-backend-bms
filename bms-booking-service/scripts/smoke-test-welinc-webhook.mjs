@@ -86,9 +86,10 @@ try {
       if (link.rowCount) await db.query('DELETE FROM bookings WHERE id = $1', [link.rows[0].booking_uuid]);
       await db.query('COMMIT');
       console.log('test rows removed');
-    } catch (error) {
+    } catch {
       await db.query('ROLLBACK');
-      throw error;
+      process.exitCode = 1;
+      console.error("Webhook smoke-test cleanup failed; inspect its tagged test rows.");
     }
   } else {
     console.error(`Test rows may remain for external booking ${externalBookingId}; inspect before cleanup`);

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { config } from 'dotenv';
 
 config({ quiet: true });

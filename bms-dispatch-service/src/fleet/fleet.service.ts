@@ -17,7 +17,7 @@ function parseCapacityKg(value: unknown): number | null {
 function vehicleDimensions(type?: string | null) {
   if (type === '6W 14ft. with Lifter') return '14 x 7 x 6 FT.';
   if (type === '10ft. Closed Van') return '10 x 6 x 6 FT.';
-  if (type === '4W L300 FB Van') return `4W - 7'5\" x 4 x 4 FT.`;
+  if (type === '4W L300 FB Van') return `4W - 7'5" x 4 x 4 FT.`;
   return null;
 }
 

@@ -19,9 +19,6 @@ type QueueItem = {
 // assignment rows stay in the database as history but are no longer surfaced.
 const APPROVAL_CHANGE_TYPES: string[] = ['reschedule', 'cancel'];
 const ACTIVE_CHANGE_STATUSES = new Set(['For Verification', 'For Plotting', 'Rescheduled', 'Assigned']);
-const MANILA_DATE = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
-});
 
 function jsonObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};

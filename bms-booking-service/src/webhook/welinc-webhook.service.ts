@@ -144,8 +144,8 @@ export function normalizePaymentMethod(value: unknown): string | undefined {
   if (/gcash/.test(v)) return 'GCash';
   if (/xendit/.test(v)) return 'Xendit';
   if (/credit|debit|card|visa|master/.test(v)) return 'Credit Card';
-  if (/bdo|bank/.test(v)) return 'BDO';
-  if (/cod|cash|offline|in person|on delivery|on pickup/.test(v)) return 'COD';
+  if (/\bbdo\b|bank/.test(v)) return 'BDO';
+  if (/\bcod\b|cash|offline|in person|on delivery|on pickup/.test(v)) return 'COD';
   if (/^online$/.test(v)) return 'Online';
   return raw;
 }
