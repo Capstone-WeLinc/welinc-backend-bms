@@ -11,6 +11,7 @@ export async function createApplication() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,
   });
+  app.enableShutdownHooks();
   app.set("trust proxy", Number(process.env.TRUST_PROXY_HOPS ?? 1));
   app.use(cookieParser());
   app.use((req: any, res: any, next: any) => {

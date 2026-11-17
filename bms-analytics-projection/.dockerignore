@@ -2,3 +2,16 @@ node_modules
 .env
 .env.*
 !.env.example
+.git
+dist
+test-results
+playwright-report
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+*.db
+*.sqlite
+*.dump
+.auth

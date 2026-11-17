@@ -129,9 +129,7 @@ export class ProxyService {
   private async health(res: Response) {
     const healthUpstreams = {
       ...this.upstreams,
-      projection:
-        process.env.ANALYTICS_PROJECTION_URL ??
-        "http://bms-analytics-projection:3024",
+      ...(process.env.ANALYTICS_PROJECTION_URL ? { projection: process.env.ANALYTICS_PROJECTION_URL } : {}),
     };
     const entries = await Promise.all(
       Object.entries(healthUpstreams).map(async ([name, root]) => {

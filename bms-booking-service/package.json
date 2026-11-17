@@ -9,35 +9,37 @@
     "typecheck": "tsc --noEmit",
     "postinstall": "prisma generate",
     "test:auth": "jest --runInBand --testPathPatterns=\"auth|session\"",
-    "seed": "node prisma/seed.mjs"
+    "seed": "node prisma/seed.mjs",
+    "seed:demo": "node scripts/seed-demo.mjs apply",
+    "test": "jest --runInBand"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.4",
     "@nestjs/core": "^11.0.1",
     "@nestjs/platform-express": "^11.0.1",
-    "@prisma/adapter-pg": "7.8.0",
-    "@prisma/client": "7.8.0",
+    "@prisma/adapter-pg": "7.10.1",
+    "@prisma/client": "7.10.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
-    "nodemailer": "9.0.5",
+    "jose": "^6.0.0",
+    "nodemailer": "10.6.0",
     "pg": "^8.21.0",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1",
-    "jose": "^6.0.0"
+    "rxjs": "^7.8.1"
   },
   "devDependencies": {
     "@nestjs/cli": "^11.0.0",
     "@types/express": "^5.0.0",
+    "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
     "@types/nodemailer": "6.4.17",
     "@types/pg": "^8.20.0",
     "dotenv": "^17.4.2",
-    "prisma": "7.8.0",
-    "typescript": "^5.9.3",
     "jest": "^30.0.0",
-    "@types/jest": "^30.0.0",
-    "ts-jest": "^29.4.15"
+    "prisma": "7.10.1",
+    "ts-jest": "^29.4.15",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": "24.x"
