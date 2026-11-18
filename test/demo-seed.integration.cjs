@@ -105,7 +105,7 @@ test('full demo seeds resume, preserve edits, project without DDL and obey servi
    await cleanupCheck.query(readFileSync(path.join(root,'bms-dispatch-service/prisma/migrations/20261117000000_remove_untouched_demo_helpers/migration.sql'),'utf8'));
    assert.deepEqual((await cleanupCheck.query('SELECT id FROM helpers ORDER BY id')).rows.map(r=>r.id),ids.slice(1).sort(),'cleanup removes only the untouched, unused and unlinked example');
   } finally {await cleanupCheck.query('ROLLBACK');await cleanupCheck.end();}
-  for(const owner of ['booking','dispatch','completion']){
+  for(const owner of Object.keys(owners)){
    const script=owner==='dispatch'?'scripts/seed-crew.mjs':'prisma/seed.mjs';
    const result=await cli(owner,script);assert.equal(result.status,0,result.stderr);
    const blocked=await cli(owner,script,[],undefined,{NODE_ENV:'production',SEED_ALLOW:''});assert.notEqual(blocked.status,0,'production baseline seed must refuse');
@@ -154,8 +154,16 @@ test('full demo seeds resume, preserve edits, project without DDL and obey servi
   await query('analytics',`CREATE ROLE ${projectionRole} LOGIN PASSWORD 'test-only-password' NOSUPERUSER NOCREATEDB NOCREATEROLE`);
   await query('analytics',`GRANT USAGE ON SCHEMA public TO ${projectionRole}; GRANT SELECT,INSERT,UPDATE,DELETE ON ALL TABLES IN SCHEMA public TO ${projectionRole}; GRANT USAGE,SELECT ON ALL SEQUENCES IN SCHEMA public TO ${projectionRole}`);
   const restricted=`postgresql://${projectionRole}:test-only-password@127.0.0.1:5437/${configs.analytics.dbName}`;
-  const projection=()=>checked(process.execPath,[path.join(root,'bms-analytics-projection/worker.mjs'),'--once'],{cwd:temp,env:{...base,ANALYTICS_READ_MODEL_DATABASE_URL:restricted}});
-  await projection();await projection();
+  const projection = (databaseSettings) => checked(
+   process.execPath,
+   [path.join(root, 'bms-analytics-projection/worker.mjs'), '--once'],
+   {
+    cwd: temp,
+    env: { ...base, DATABASE_URL: '', ANALYTICS_READ_MODEL_DATABASE_URL: '', ...databaseSettings },
+   },
+  );
+  await projection({ DATABASE_URL: restricted });
+  await projection({ ANALYTICS_READ_MODEL_DATABASE_URL: restricted });
   assert.equal((await query('analytics','SELECT count(*)::int n FROM bookings')).rows[0].n,150);
   assert.equal((await query('analytics','SELECT count(*)::int n FROM bms_projection_rows')).rows[0].n,150);
   const expectedPaid=completed.reduce((sum,r)=>sum+(r.payment==='partial'?r.amount/2:r.payment==='paid'?r.amount:r.payment==='refunded'?r.amount*0.75:0),0);

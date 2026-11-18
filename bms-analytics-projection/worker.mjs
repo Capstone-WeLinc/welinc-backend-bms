@@ -3,11 +3,13 @@ import pg from 'pg';
 import { workerConfig } from './config.mjs';
 const settings = workerConfig(process.env);
 
-const url = process.env.ANALYTICS_READ_MODEL_DATABASE_URL;
-if (!url) throw new Error('ANALYTICS_READ_MODEL_DATABASE_URL is required');
 const key = process.env.BMS_INTERNAL_SERVICE_KEY;
 if (!key || key.length < 32) throw new Error('BMS_INTERNAL_SERVICE_KEY is required');
-const pool = new pg.Pool({ connectionString: url, max: settings.max, connectionTimeoutMillis: 1900 });
+const pool = new pg.Pool({
+  connectionString: settings.databaseUrl,
+  max: settings.max,
+  connectionTimeoutMillis: 1900,
+});
 pool.on('error',()=>console.error('Projection database connection closed'));
 let lastSuccess=0;
 
