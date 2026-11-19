@@ -20,6 +20,7 @@ updates:
       # comment "@dependabot ignore this major version" on its pull request.
       npm-minor-and-patch:
         update-types: [minor, patch]
+        exclude-patterns: ["@nestjs/*"]
     ignore:
       # The types follow the Node version we run (24, from .nvmrc), not the newest Node
       - dependency-name: "@types/node"
@@ -45,6 +46,7 @@ updates:
       # comment "@dependabot ignore this major version" on its pull request.
       npm-minor-and-patch:
         update-types: [minor, patch]
+        exclude-patterns: ["@nestjs/*"]
     ignore:
       # The types follow the Node version we run (24, from .nvmrc), not the newest Node
       - dependency-name: "@types/node"
@@ -70,6 +72,7 @@ updates:
       # comment "@dependabot ignore this major version" on its pull request.
       npm-minor-and-patch:
         update-types: [minor, patch]
+        exclude-patterns: ["@nestjs/*"]
     ignore:
       # The types follow the Node version we run (24, from .nvmrc), not the newest Node
       - dependency-name: "@types/node"
@@ -95,6 +98,7 @@ updates:
       # comment "@dependabot ignore this major version" on its pull request.
       npm-minor-and-patch:
         update-types: [minor, patch]
+        exclude-patterns: ["@nestjs/*"]
     ignore:
       # The types follow the Node version we run (24, from .nvmrc), not the newest Node
       - dependency-name: "@types/node"
@@ -120,6 +124,7 @@ updates:
       # comment "@dependabot ignore this major version" on its pull request.
       npm-minor-and-patch:
         update-types: [minor, patch]
+        exclude-patterns: ["@nestjs/*"]
     ignore:
       # The types follow the Node version we run (24, from .nvmrc), not the newest Node
       - dependency-name: "@types/node"
@@ -145,6 +150,7 @@ updates:
       # comment "@dependabot ignore this major version" on its pull request.
       npm-minor-and-patch:
         update-types: [minor, patch]
+        exclude-patterns: ["@nestjs/*"]
     ignore:
       # The types follow the Node version we run (24, from .nvmrc), not the newest Node
       - dependency-name: "@types/node"
