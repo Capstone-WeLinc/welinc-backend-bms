@@ -14,6 +14,7 @@ model Booking {
   fullName                  String?  @map("full_name") @db.VarChar(200)
   service                   String   @db.VarChar(100)
   amount                    Decimal? @db.Decimal(10, 2)
+  downpayment               Decimal? @db.Decimal(10, 2)
   totalAmount               String?  @map("total_amount")
   requestedPaymentMethod    String?  @map("requested_payment_method") @db.VarChar(100)
   serviceType               String?  @map("service_type") @db.VarChar(120)

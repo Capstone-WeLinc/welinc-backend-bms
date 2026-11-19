@@ -21,6 +21,25 @@ const DIRECT_EDIT_FIELDS = [
 ] as const;
 const ASSIGNED_JOB_FIELDS = ['service', 'preferredTime', 'address', 'pickupAddress', 'deliveryAddress'];
 
+const toCents = (value: unknown) => Math.round(Number(value) * 100);
+
+/**
+ * Validates a downpayment against the booking amount. Returns the value to store (null clears it),
+ * or undefined when the input does not change the stored downpayment.
+ */
+function parseDownpayment(raw: unknown, existing: { amount: Prisma.Decimal | null; downpayment: Prisma.Decimal | null }) {
+  if (raw === undefined) return undefined;
+  const text = raw === null ? '' : String(raw).trim();
+  if (text && !/^\d{1,8}(?:\.\d{1,2})?$/.test(text)) throw new BadRequestException('Downpayment must be a peso amount with up to 2 decimals');
+  const next = text && toCents(text) > 0 ? text : null;
+  if (next !== null && existing.amount !== null && toCents(next) > toCents(existing.amount)) {
+    throw new BadRequestException('Downpayment cannot exceed the booking amount');
+  }
+  const current = existing.downpayment === null ? null : toCents(existing.downpayment);
+  if ((next === null ? null : toCents(next)) === current) return undefined;
+  return next;
+}
+
 function uuid(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 }
@@ -136,10 +155,13 @@ export class BookingService {
     if (raw.date !== undefined) throw new BadRequestException('Use a reschedule request to change the booking date');
     if (raw.amount !== undefined) throw new BadRequestException('The booking amount cannot be changed here');
     const existingValues = existing as unknown as Record<string, unknown>;
-    const changes = Object.fromEntries(DIRECT_EDIT_FIELDS.filter((field) => raw[field] !== undefined && raw[field] !== existingValues[field]).map((field) => [field, raw[field]]));
+    const changes: Record<string, unknown> = Object.fromEntries(DIRECT_EDIT_FIELDS.filter((field) => raw[field] !== undefined && raw[field] !== existingValues[field]).map((field) => [field, raw[field]]));
+    const downpayment = parseDownpayment(raw.downpayment, existing);
+    if (downpayment !== undefined) changes.downpayment = downpayment;
     if (!Object.keys(changes).length) throw new BadRequestException('Include at least one changed booking field');
     if ((await this.hasPendingChange(id)).pending) throw new ConflictException('This booking has a pending reschedule or cancellation request');
-    await this.assertNotDistributed(id);
+    // A downpayment does not touch the job order, so it can still be recorded after the trip is distributed.
+    if (Object.keys(changes).some((field) => field !== 'downpayment')) await this.assertNotDistributed(id);
     const needsUpdate = existing.status === 'Assigned' && ASSIGNED_JOB_FIELDS.some((field) => changes[field] !== undefined);
     const saved = await this.prisma.$transaction(async (tx) => {
       const updated = await tx.booking.updateMany({
@@ -191,6 +213,8 @@ export class BookingService {
       if (input[key] !== undefined) (data as Record<string, unknown>)[key] = input[key];
     }
     if (input.permitRequired !== undefined) data.permitRequired = input.permitRequired;
+    const downpayment = parseDownpayment(input.downpayment, existing);
+    if (downpayment !== undefined) data.downpayment = downpayment;
     if (input.status !== undefined) data.status = input.status;
     else if (material && (existing.status !== 'Assigned' || input.date !== undefined)) data.status = 'Rescheduled';
     const updatedBooking = await this.prisma.$transaction(async (tx) => {

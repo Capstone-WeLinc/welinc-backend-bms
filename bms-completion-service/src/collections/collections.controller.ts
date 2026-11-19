@@ -46,10 +46,14 @@ export class CollectionsController {
   }
 
   @Get('daily-sales') @BmsRoles('ADMIN', 'CUSTOMER_SUPPORT')
-  sales(@Query('submittedOnly') submittedOnly?: string) { return this.collections.sales(submittedOnly === 'true'); }
+  sales(@Query('submittedOnly') submittedOnly?: string, @Query('completedOnly') completedOnly?: string) {
+    return this.collections.sales(submittedOnly === 'true', completedOnly === 'true');
+  }
 
   @Get('daily-sales/summary') @BmsRoles('ADMIN', 'CUSTOMER_SUPPORT')
-  summary(@Query('date') date?: string) { return this.collections.summary(date); }
+  summary(@Query('date') date?: string, @Query('completedOnly') completedOnly?: string) {
+    return this.collections.summary(date, completedOnly === 'true');
+  }
 
   @Get('daily-sales/drafts') @BmsRoles('ADMIN', 'CUSTOMER_SUPPORT')
   drafts(@Req() request: ActorRequest) {

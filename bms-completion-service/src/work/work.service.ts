@@ -36,12 +36,15 @@ export class WorkService {
     const paid = collections.reduce((sum, item) => sum + Math.round(Number(item.amount) * 100), 0) -
       refunds.reduce((sum, item) => sum + Math.round(Number(item.amount) * 100), 0);
     const due = booking.amount === null ? null : Math.round(Number(booking.amount) * 100);
+    const downpayment = booking.downpayment == null ? 0 : Math.round(Number(booking.downpayment) * 100);
+    const settled = paid + downpayment;
     return {
       bookingId: booking.bookingId, bookingNo: booking.bookingNo, client: booking.client,
       service: booking.service, date: booking.date, status: booking.status,
       amount: booking.amount === null ? null : Number(booking.amount),
-      paymentStatus: paid === 0 ? 'Pending' : due !== null && paid >= due ? 'Paid' : 'Partial',
-      amountPaid: paid / 100, paymentMethod: collections.at(-1)?.method ?? null,
+      paymentStatus: settled === 0 ? 'Pending' : due !== null && settled >= due ? 'Paid' : 'Partial',
+      amountPaid: paid / 100, downpayment: downpayment / 100,
+      remainingBalance: due === null ? null : Math.max(0, due - settled) / 100, paymentMethod: collections.at(-1)?.method ?? null,
       protectiveMaterials: booking.protectiveMaterials,
       postServiceStatus: outcome?.postServiceStatus ?? 'Pending Review',
       arrivalTime: outcome?.arrivalTime ?? null, additionalMaterials: outcome?.additionalMaterials ?? [],
