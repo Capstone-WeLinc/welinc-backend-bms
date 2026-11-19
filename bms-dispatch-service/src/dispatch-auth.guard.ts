@@ -1,35 +1,22 @@
-import { CanActivate, ExecutionContext, ForbiddenException, Injectable, SetMetadata, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ExecutionContext, ForbiddenException, Inject, Injectable, SetMetadata } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { JwtService } from '@nestjs/jwt';
 import type { Request } from 'express';
-
+import { AccountCheck } from './auth/account-check';
+import { TOKEN_VERIFIER, TokenVerifier, checkPerson } from './auth/verify';
 export type BmsRole = 'ADMIN' | 'CUSTOMER_SUPPORT' | 'OPERATIONS';
 const ROLES = 'bmsRoles';
-export const BmsRoles = (...roles: BmsRole[]) => SetMetadata(ROLES, roles);
-
+export const BmsRoles = (...roles: BmsRole[]) => SetMetadata(ROLES,roles);
 @Injectable()
 export class DispatchAuthGuard implements CanActivate {
-  constructor(private readonly jwt: JwtService, private readonly reflector: Reflector) {}
-
+  constructor(@Inject(TOKEN_VERIFIER) private readonly verifier: TokenVerifier, private readonly accounts: AccountCheck, private readonly reflector: Reflector) {}
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const secret = process.env.JWT_SECRET;
-    if (!secret || secret.length < 32) throw new ServiceUnavailableException('Dispatch authentication is not configured');
-    const request = context.switchToHttp().getRequest<Request>();
-    const match = /^Bearer (.+)$/i.exec(request.header('authorization') ?? '');
-    if (!match) throw new UnauthorizedException();
-    let claims: { sub?: string; roles?: Array<{ role: string; system: string }> };
-    try {
-      claims = await this.jwt.verifyAsync(match[1], { secret, algorithms: ['HS256'] });
-    } catch {
-      throw new UnauthorizedException();
-    }
-    if (!claims?.sub) throw new UnauthorizedException();
-    (request as Request & { user?: typeof claims }).user = claims;
-    const required = this.reflector.getAllAndOverride<BmsRole[]>(ROLES, [context.getHandler(), context.getClass()]) ?? [];
-    const assignments = Array.isArray(claims.roles) ? claims.roles : [];
-    if (!required.some((role) => assignments.some((item) => item.system === 'BMS' && item.role === role))) {
-      throw new ForbiddenException();
-    }
+    const req = context.switchToHttp().getRequest<Request>();
+    const {raw,token} = await checkPerson(this.verifier,req);
+    const {user} = await this.accounts.confirm(raw,token);
+    const required = this.reflector.getAllAndOverride<BmsRole[]>(ROLES,[context.getHandler(),context.getClass()]) ?? [];
+    const role = required.find(role => user.roles.some(item => item.system==='BMS' && item.role===role));
+    if (!role) throw new ForbiddenException();
+    Object.assign(req,{user:{...user,roles:token.roles},bmsIdentity:{...user,role,roles:token.roles}});
     return true;
   }
 }

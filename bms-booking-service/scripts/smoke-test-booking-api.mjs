@@ -1,17 +1,13 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { config } from 'dotenv';
 import pg from 'pg';
 
 config({ quiet: true });
-const base = process.env.BOOKING_TEST_URL ?? 'http://127.0.0.1:3002';
-if (!process.env.JWT_SECRET || !process.env.DATABASE_URL) throw new Error('Configure test JWT_SECRET and DATABASE_URL');
+const base = process.env.BOOKING_TEST_URL ?? 'http://127.0.0.1:3021';
 
-function token(role, system = 'BMS') {
-  const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const head = encode({ alg: 'HS256', typ: 'JWT' });
-  const body = encode({ sub: `smoke-${randomUUID()}`, roles: [{ role, system }], exp: Math.floor(Date.now() / 1000) + 120 });
-  const signature = createHmac('sha256', process.env.JWT_SECRET).update(`${head}.${body}`).digest('base64url');
-  return `${head}.${body}.${signature}`;
+function token(role,system='BMS') {
+  const name=system==='BMS'?`BMS_TEST_${role}_ACCESS_TOKEN`:'BMS_TEST_FOREIGN_ACCESS_TOKEN';
+  const value=process.env[name];if(!value)throw new Error(`Provide ${name} from a real suite test session`);return value;
 }
 
 async function call(path, method = 'GET', body, bearer) {

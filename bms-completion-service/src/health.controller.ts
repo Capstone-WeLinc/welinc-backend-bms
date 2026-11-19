@@ -11,7 +11,7 @@ export class HealthController {
   @Get('ready')
   async ready() {
     try {
-      await this.prisma.$queryRaw`SELECT 1`;
+      await this.prisma.checkReady();
       return { status: 'ok', completionDatabase: 'ok' };
     } catch {
       throw new ServiceUnavailableException('Completion database is unavailable');

@@ -11,7 +11,7 @@ export class HealthController {
   @Get('ready')
   async ready() {
     try {
-      await this.prisma.$queryRaw`SELECT 1`;
+      await this.prisma.checkReady();
       return { status: 'ok', dispatchDatabase: 'ok' };
     } catch {
       throw new ServiceUnavailableException('Dispatch database is unavailable');

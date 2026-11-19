@@ -1,0 +1,29 @@
+{
+  "name": "welinc-backend-bms",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BMS backend processes and local integration setup",
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "postinstall": "node scripts/prepare-local.mjs",
+    "prepare:local": "node scripts/prepare-local.mjs",
+    "test:live": "node scripts/check-live.mjs",
+    "seed": "node scripts/seed-demo.mjs",
+    "bootstrap:ci": "node scripts/ci.mjs install",
+    "audit:ci": "node scripts/ci.mjs audit",
+    "lint:ci": "eslint .",
+    "typecheck": "node scripts/ci.mjs typecheck",
+    "build": "node scripts/ci.mjs build",
+    "test": "node --test test/*.test.mjs && node scripts/ci.mjs test",
+    "test:seed:integration": "node --test test/demo-seed.integration.cjs"
+  },
+  "devDependencies": {
+    "eslint": "^9.34.0",
+    "@eslint/js": "^9.34.0",
+    "globals": "^16.3.0",
+    "typescript-eslint": "^8.42.0",
+    "typescript": "^5.9.3"
+  }
+}

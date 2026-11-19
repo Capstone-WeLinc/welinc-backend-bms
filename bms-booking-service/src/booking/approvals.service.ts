@@ -3,7 +3,7 @@ import {
   OnModuleDestroy, OnModuleInit, ServiceUnavailableException,
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import pg from 'pg';
+import { DirectoryClient } from '../auth/directory.client';
 import { PrismaService } from '../prisma.service';
 import { CustomerNotificationService } from './customer-notification.service';
 
@@ -19,9 +19,6 @@ type QueueItem = {
 // assignment rows stay in the database as history but are no longer surfaced.
 const APPROVAL_CHANGE_TYPES: string[] = ['reschedule', 'cancel'];
 const ACTIVE_CHANGE_STATUSES = new Set(['For Verification', 'For Plotting', 'Rescheduled', 'Assigned']);
-const MANILA_DATE = new Intl.DateTimeFormat('en-CA', {
-  timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
-});
 
 function jsonObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -43,41 +40,16 @@ function isCalendarDate(value: unknown): value is string {
 export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
   private timer?: NodeJS.Timeout;
   private processing = false;
-  private readonly authPool: pg.Pool | null;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly customerNotifications: CustomerNotificationService,
-  ) {
-    const authUrl = process.env.AUTH_DATABASE_URL;
-    try {
-      const host = authUrl ? new URL(authUrl).hostname : '';
-      this.authPool = ['localhost', '127.0.0.1', '[::1]'].includes(host) ? new pg.Pool({ connectionString: authUrl }) : null;
-    } catch {
-      this.authPool = null;
-    }
-  }
+    private readonly directory: DirectoryClient,
+  ) {}
 
   private async userDetails(ids: string[]) {
-    const uniqueIds = [...new Set(ids.filter(Boolean))];
-    if (!uniqueIds.length) return new Map<string, { name: string; role: string }>();
-    if (!this.authPool) return new Map<string, { name: string; role: string }>();
-    let rows: { id: string; name: string; role: string | null }[];
-    try {
-      const result = await this.authPool.query<{ id: string; name: string; role: string | null }>(`
-        SELECT u.id::text AS id, u.name,
-          (SELECT role::text FROM user_roles WHERE user_id = u.id AND system = 'BMS' ORDER BY created_at LIMIT 1) AS role
-        FROM users u WHERE u.id = ANY($1::uuid[])
-      `, [uniqueIds]);
-      rows = result.rows;
-    } catch {
-      return new Map<string, { name: string; role: string }>();
-    }
-    const result = new Map<string, { name: string; role: string }>();
-    for (const row of rows) {
-      if (!result.has(row.id)) result.set(row.id, { name: row.name, role: row.role ?? 'Unknown role' });
-    }
-    return result;
+    const users = await this.directory.lookup(ids);
+    return new Map([...users].map(([id,user]) => [id,{name:user.erased ? 'Deleted user' : user.name,role:user.roles.join(', ')}]));
   }
 
   private async withSubmitterNames<T extends { submittedBy: string }>(items: T[]) {
@@ -119,13 +91,12 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
 
   async onModuleDestroy() {
     if (this.timer) clearInterval(this.timer);
-    await this.authPool?.end();
   }
 
   private async completion(path: string, init: RequestInit = {}) {
     const key = process.env.BMS_INTERNAL_SERVICE_KEY;
     if (!key || key.length < 32) throw new ServiceUnavailableException('Internal BMS service authentication is not configured');
-    const root = process.env.COMPLETION_API_URL || 'http://127.0.0.1:3004';
+    const root = process.env.COMPLETION_API_URL || 'http://127.0.0.1:3023';
     let response: Response;
     try {
       response = await fetch(new URL(path, root), {
@@ -150,7 +121,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
   private async dispatch(path: string, body: unknown) {
     const key = process.env.BMS_INTERNAL_SERVICE_KEY;
     if (!key || key.length < 32) throw new Error('Internal BMS service authentication is not configured');
-    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3003';
+    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022';
     const response = await fetch(new URL(path, root), {
       method: 'POST', headers: { 'content-type': 'application/json', 'x-bms-service-key': key },
       body: JSON.stringify(body), signal: AbortSignal.timeout(10000),
@@ -169,7 +140,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
     if (!ACTIVE_CHANGE_STATUSES.has(booking.status)) throw new ConflictException('This booking cannot be changed in its current status');
     const dispatchKey = process.env.BMS_INTERNAL_SERVICE_KEY;
     if (!dispatchKey || dispatchKey.length < 32) throw new ServiceUnavailableException('Internal BMS service authentication is not configured');
-    const dispatchRoot = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3003';
+    const dispatchRoot = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022';
     try {
       const check = await fetch(new URL(`/internal/dispatch/booking-state/${booking.id}`, dispatchRoot), {
         headers: { 'x-bms-service-key': dispatchKey }, signal: AbortSignal.timeout(5000),

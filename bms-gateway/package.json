@@ -3,13 +3,58 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "start": "node --env-file=.env server.mjs",
-    "test": "node --test"
+    "start": "node dist/main.js",
+    "test": "jest --runInBand",
+    "test:auth": "jest --runInBand --testPathPatterns=\"auth|session\"",
+    "build": "nest build",
+    "start:dev": "nest start --watch",
+    "typecheck": "tsc --noEmit"
   },
   "engines": {
-    "node": ">=20"
+    "node": "24.x"
   },
   "dependencies": {
-    "pg": "^8.21.0"
+    "@nestjs/common": "^11.0.1",
+    "@nestjs/core": "^11.0.1",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/platform-express": "^11.0.1",
+    "jose": "^6.0.0",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "cookie-parser": "^1.4.7",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@nestjs/cli": "^11.0.0",
+    "@types/node": "^24.0.0",
+    "@types/express": "^5.0.0",
+    "jest": "^30.0.0",
+    "@types/jest": "^30.0.0",
+    "ts-jest": "^29.4.15",
+    "@types/cookie-parser": "^1.4.9",
+    "supertest": "^7.0.0",
+    "@types/supertest": "^6.0.0"
+  },
+  "jest": {
+    "rootDir": "src",
+    "testRegex": ".*\\.spec\\.ts$",
+    "testEnvironment": "node",
+    "transform": {
+      "^.+\\.(t|j)s$": [
+        "ts-jest",
+        {
+          "tsconfig": {
+            "allowJs": true,
+            "module": "commonjs",
+            "moduleResolution": "node10",
+            "resolvePackageJsonExports": false
+          }
+        }
+      ]
+    },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!jose/)"
+    ]
   }
 }

@@ -20,6 +20,10 @@ type Snapshot = {
   servicesAvailed?: string[]; protectiveMaterials?: string[];
   additionalServicesAvailed?: AdditionalService[];
   hasInsurance?: boolean; permitRequired?: boolean;
+  paymentMethod?: string;
+  /** Sum of the add-on prices Wix listed; used to work out the base service price. */
+  addOnTotal?: number;
+  selectedTruck?: { id: string; name: string; rate: number; truckTypeId: string; locationCode: string };
 };
 type Event = { eventType: EventType; externalBookingId: string; occurredAt: string; booking?: Snapshot };
 
@@ -81,17 +85,77 @@ function wixFormFields(source: Record<string, unknown>) {
     .filter((field) => field.label && field.value);
 }
 
+type PricedItem = { name: string; quantity: number; unitPrice?: number };
+
+/** Splits Wix add-on text such as "20x20x20 Box x2 (₱130.00), Cling Wrap (₱400.00)" into items. */
+export function parseAddOnItems(details: string): PricedItem[] {
+  const items: PricedItem[] = [];
+  const priced = /\s*([^,(]+?)\s*(?:[x×]\s*(\d+))?\s*\(\s*(?:₱|PHP)?\s*([\d,]+(?:\.\d{1,2})?)\s*\)\s*,?/gi;
+  let match: RegExpExecArray | null;
+  let consumed = 0;
+  while ((match = priced.exec(details))) {
+    if (match.index !== consumed) break;
+    consumed = priced.lastIndex;
+    items.push({ name: match[1].trim(), quantity: Math.max(1, Number(match[2] ?? 1)), unitPrice: Number(match[3].replace(/,/g, '')) });
+  }
+  if (consumed === details.length && items.length) return items;
+  return details.split(',').map((part) => part.trim()).filter(Boolean).map((part) => {
+    const qty = part.match(/^(.*?)\s*[x×]\s*(\d+)$/);
+    return qty ? { name: qty[1].trim(), quantity: Number(qty[2]) } : { name: part, quantity: 1 };
+  });
+}
+
 function wixAddOns(source: Record<string, unknown>) {
   const services: string[] = [];
   const protectiveMaterials: string[] = [];
+  const additional: AdditionalService[] = [];
+  let total = 0;
   for (const item of (Array.isArray(source.add_on_groups) ? source.add_on_groups : []).map(record)) {
     if (!item) continue;
     const name = valueText(item.addon_group_name, 150) ?? 'Welinc add-on';
     const details = valueText(item.addon_group_details, 500);
-    if (/protective|packing material/i.test(name)) protectiveMaterials.push(details ?? name);
-    else services.push(details ? `${name}: ${details}` : name);
+    const isMaterial = /protective|packing material/i.test(name);
+    const parsed = details ? parseAddOnItems(details) : [];
+    for (const part of parsed) total += (part.unitPrice ?? 0) * part.quantity;
+    if (isMaterial) {
+      // Repeat a name per quantity so each unit is priced from the BMS material catalog.
+      if (parsed.length) for (const part of parsed) for (let i = 0; i < Math.min(part.quantity, 50); i++) protectiveMaterials.push(part.name);
+      else protectiveMaterials.push(name);
+    } else {
+      services.push(details ? `${name}: ${details}` : name);
+      for (const part of parsed) {
+        if (part.unitPrice === undefined) continue;
+        additional.push({
+          name: part.quantity > 1 ? `${part.name} x${part.quantity}` : part.name,
+          price: `₱${(part.unitPrice * part.quantity).toFixed(2)}`,
+        });
+      }
+    }
   }
-  return { services: [...new Set(services)], protectiveMaterials: [...new Set(protectiveMaterials)] };
+  return { services: [...new Set(services)], protectiveMaterials, additional, total };
+}
+
+// Maps the payment wording Wix sends onto the method names BMS screens use.
+export function normalizePaymentMethod(value: unknown): string | undefined {
+  const raw = valueText(value, 100);
+  if (!raw) return undefined;
+  const v = raw.toLowerCase().replace(/[_-]+/g, ' ');
+  if (/^unknown/.test(v)) return undefined;
+  if (/gcash/.test(v)) return 'GCash';
+  if (/xendit/.test(v)) return 'Xendit';
+  if (/credit|debit|card|visa|master/.test(v)) return 'Credit Card';
+  if (/\bbdo\b|bank/.test(v)) return 'BDO';
+  if (/\bcod\b|cash|offline|in person|on delivery|on pickup/.test(v)) return 'COD';
+  if (/^online$/.test(v)) return 'Online';
+  return raw;
+}
+
+function firstPaymentMethod(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    const method = normalizePaymentMethod(record(value)?.method ?? record(value)?.type ?? value);
+    if (method) return method;
+  }
+  return undefined;
 }
 
 function optionalArray(value: unknown): string[] | undefined {
@@ -170,6 +234,7 @@ export function parseEvent(raw: Buffer): Event {
         protectiveMaterials: optionalArray(b.protectiveMaterials),
         hasInsurance: booleanValue(b.hasInsurance),
         permitRequired: booleanValue(b.permitRequired),
+        paymentMethod: normalizePaymentMethod(b.paymentMethod),
       };
     }
     return { eventType, externalBookingId: input.externalBookingId as string, occurredAt: input.occurredAt as string, booking };
@@ -289,6 +354,16 @@ export function parseEvent(raw: Buffer): Event {
       : undefined;
     const permitRequired = booleanValue(source.permitRequired ?? source.permit_required ?? customField(/permit required/i));
     const hasInsurance = booleanValue(source.hasInsurance ?? source.has_insurance ?? customField(/insurance/i));
+    const payment = record(source.payment) ?? record(wixBooking?.payment);
+    const paymentMethod = firstPaymentMethod(
+      source.paymentMethod, source.payment_method, source.booking_payment_method,
+      source.mode_of_payment, source.modeOfPayment,
+      customField(/payment|mode of pay|pay(ment)? (via|thru|through|option)/i),
+      payment?.method, payment?.paymentMethod, payment?.type,
+      wixBooking?.paymentMethod, wixBooking?.selectedPaymentOption,
+      source.selectedPaymentOption, source.selected_payment_option, source.payment_option, source.booking_payment_option,
+      source.payment_type, source.booking_payment_type,
+    );
     const resource = valueText(source.staff_member_name_main_language || source.staff_member_name, 200);
 
     booking = {
@@ -296,7 +371,9 @@ export function parseEvent(raw: Buffer): Event {
       service,
       date: dateStr,
       amount,
-      serviceType: valueText(source.serviceType || source.service_type, 100),
+      // Wix sends its scheduling type here (APPOINTMENT/CLASS/COURSE), which is not a BMS service type.
+      serviceType: valueText(source.serviceType, 100) ??
+        (/^(appointment|class|course)$/i.test(valueText(source.service_type, 100) ?? '') ? undefined : valueText(source.service_type, 100)),
       deliveryCategory: valueText(source.deliveryCategory || source.delivery_category, 40),
       pickupAddress,
       deliveryAddress,
@@ -309,17 +386,91 @@ export function parseEvent(raw: Buffer): Event {
       estimatedItems,
       servicesAvailed: [...addOns.services, ...(optionalArray(source.servicesAvailed) ?? [])],
       protectiveMaterials: [...addOns.protectiveMaterials, ...(optionalArray(source.protectiveMaterials) ?? [])],
-      additionalServicesAvailed: Array.isArray(source.additionalServicesAvailed)
-        ? source.additionalServicesAvailed.map(record).filter((item): item is Record<string, unknown> => Boolean(item))
-          .map((item) => ({ name: valueText(item.name, 150) ?? '', price: valueText(item.price, 100) ?? '' }))
-          .filter((item) => item.name)
-        : undefined,
+      additionalServicesAvailed: [
+        ...addOns.additional,
+        ...(Array.isArray(source.additionalServicesAvailed)
+          ? source.additionalServicesAvailed.map(record).filter((item): item is Record<string, unknown> => Boolean(item))
+            .map((item) => ({ name: valueText(item.name, 150) ?? '', price: valueText(item.price, 100) ?? '' }))
+            .filter((item) => item.name)
+          : []),
+      ],
+      addOnTotal: addOns.total,
       hasInsurance,
       permitRequired,
+      paymentMethod,
     };
   }
 
   return { eventType, externalBookingId, occurredAt, booking };
+}
+
+const normalizeName = (value: string) => value.toLowerCase().replace(/\s+/g, ' ').trim();
+
+/** BMS truck type implied by a Wix service name, or undefined when the service has no truck. */
+export function truckTypeFromName(name: string): string | undefined {
+  if (/l300|\b4w\b/i.test(name)) return '4W L300 FB Van';
+  if (/10\s*ft|closed\s*van/i.test(name)) return '10ft. Closed Van';
+  if (/14\s*ft|lifter/i.test(name)) return '6W 14ft. with Lifter';
+  return undefined;
+}
+
+/**
+ * Fills in what Wix does not send directly: the truck (Wix service names match BMS truck-rate names),
+ * the location zone, the BMS service type, and a priced line for non-truck services, so the cost
+ * summary can itemize Wix bookings like BMS-made ones.
+ */
+export async function applyCatalog(tx: Prisma.TransactionClient, snapshot: Snapshot): Promise<Snapshot> {
+  const service = normalizeName(snapshot.service);
+  const trucks = await tx.truckRate.findMany({ where: { isActive: true } });
+  const truck = trucks.find((row) => normalizeName(row.name) === service);
+  const serviceTypes = await tx.bookingServiceCatalog.findMany({ where: { isActive: true }, select: { name: true } });
+  const serviceType = snapshot.serviceType ?? serviceTypes.find((row) => normalizeName(row.name) === service)?.name;
+  const extras = snapshot.additionalServicesAvailed ?? [];
+  // Wix wording can differ slightly from the BMS catalog ("Packing tape" vs "Packaging Tape").
+  const looseName = (value: string) => value.toLowerCase().replace(/packaging/g, 'packing').replace(/[^a-z0-9]/g, '');
+  const materialCatalog = snapshot.protectiveMaterials?.length
+    ? await tx.protectiveMaterial.findMany({ where: { isActive: true }, select: { name: true } })
+    : [];
+  const protectiveMaterials = snapshot.protectiveMaterials?.map((name) =>
+    materialCatalog.find((row) => looseName(row.name) === looseName(name))?.name ?? name);
+  snapshot = { ...snapshot, protectiveMaterials };
+  if (truck) {
+    return {
+      ...snapshot,
+      serviceType,
+      deliveryCategory: snapshot.deliveryCategory ?? truck.locationCode,
+      selectedTruck: { id: truck.id, name: truck.name, rate: Number(truck.rate6hr), truckTypeId: truck.truckTypeId, locationCode: truck.locationCode },
+      additionalServicesAvailed: extras,
+    };
+  }
+  const total = snapshot.amount ? Number(snapshot.amount) : undefined;
+  const base = total !== undefined ? Math.round((total - (snapshot.addOnTotal ?? 0)) * 100) / 100 : undefined;
+  // A truck service whose exact name is not in the rate list (e.g. "OR: 10FT Closed Van (2 HELPERS)"):
+  // take the truck type from the name and the Wix price as its rate.
+  const truckTypeId = truckTypeFromName(snapshot.service);
+  if (truckTypeId) {
+    const zone = snapshot.service.match(/^\s*([A-Z]{1,3}\d?)\s*(?:\([^)]*\))?\s*:/)?.[1];
+    const otherLines = extras.filter((item) => normalizeName(item.name) !== service);
+    return {
+      ...snapshot,
+      serviceType,
+      deliveryCategory: snapshot.deliveryCategory ?? zone,
+      selectedTruck: {
+        id: `wix:${service.replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 70)}`,
+        name: snapshot.service, rate: base && base > 0 ? base : 0, truckTypeId, locationCode: zone ?? 'WIX',
+      },
+      additionalServicesAvailed: otherLines,
+    };
+  }
+  // Not a truck (e.g. "Motorized Helper"): list the service itself with its base price.
+  const alreadyListed = extras.some((item) => normalizeName(item.name) === service);
+  return {
+    ...snapshot,
+    serviceType,
+    additionalServicesAvailed: alreadyListed || base === undefined || base <= 0
+      ? extras
+      : [{ name: snapshot.service, price: `₱${base.toFixed(2)}` }, ...extras],
+  };
 }
 
 @Injectable()
@@ -401,7 +552,7 @@ export class WelincWebhookService {
             await record('IGNORED', 'already_imported');
             return { accepted: true, duplicate: true, applied: false, pendingReview: false };
           }
-          const b = event.booking!;
+          const b = await applyCatalog(tx, event.booking!);
           const now = new Date();
           const bookingNo = await nextBookingNumber(tx, now);
           const booking = await tx.booking.create({ data: {
@@ -416,8 +567,10 @@ export class WelincWebhookService {
             itemDetails: b.itemDetails, specialInstructions: b.specialInstructions,
             estimatedItems: b.estimatedItems,
             servicesAvailed: b.servicesAvailed ?? [], protectiveMaterials: b.protectiveMaterials ?? [],
-            ...(b.additionalServicesAvailed && { additionalServicesAvailed: b.additionalServicesAvailed as Prisma.InputJsonValue }),
+            ...(b.additionalServicesAvailed?.length && { additionalServicesAvailed: b.additionalServicesAvailed as Prisma.InputJsonValue }),
+            ...(b.selectedTruck && { selectedTruck: b.selectedTruck as Prisma.InputJsonValue }),
             hasInsurance: b.hasInsurance ?? false, permitRequired: b.permitRequired ?? false,
+            requestedPaymentMethod: b.paymentMethod,
           } });
           await tx.welincBookingLink.create({ data: {
             externalBookingId: event.externalBookingId, bookingUuid: booking.id, lastOccurredAt: occurredAt,
@@ -446,7 +599,7 @@ export class WelincWebhookService {
         if (event.eventType === 'booking.cancelled.v1') {
           await tx.booking.update({ where: { id: booking.id }, data: { status: 'Cancelled', version: { increment: 1 } } });
         } else {
-          const snapshot = b!;
+          const snapshot = await applyCatalog(tx, b!);
           await tx.booking.update({ where: { id: booking.id }, data: {
             client: snapshot.customerName, fullName: snapshot.customerName,
             service: snapshot.service, date: snapshot.date,
@@ -464,8 +617,10 @@ export class WelincWebhookService {
             ...(snapshot.servicesAvailed !== undefined && { servicesAvailed: snapshot.servicesAvailed }),
             ...(snapshot.protectiveMaterials !== undefined && { protectiveMaterials: snapshot.protectiveMaterials }),
             ...(snapshot.additionalServicesAvailed && { additionalServicesAvailed: snapshot.additionalServicesAvailed as Prisma.InputJsonValue }),
+            ...(snapshot.selectedTruck && { selectedTruck: snapshot.selectedTruck as Prisma.InputJsonValue }),
             ...(snapshot.hasInsurance !== undefined && { hasInsurance: snapshot.hasInsurance }),
             ...(snapshot.permitRequired !== undefined && { permitRequired: snapshot.permitRequired }),
+            ...(snapshot.paymentMethod !== undefined && { requestedPaymentMethod: snapshot.paymentMethod }),
             ...(material && { status: 'Rescheduled' }), version: { increment: 1 },
           } });
         }

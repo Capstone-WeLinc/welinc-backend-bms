@@ -137,7 +137,7 @@ export class DispatchService {
         driverName: driver?.fullName ?? 'Assigned driver',
         driverContact: driver?.contact ?? '',
         helperNames: assignedHelpers.map((helper) => helper.fullName),
-        vehicleLabel: vehicle ? `${vehicle.plateNumber} ${vehicle.alias ?? ''}`.trim() : '',
+        vehicleLabel: vehicle ? `${vehicle.plateNumber} ${vehicle.alias ?? ''}`.trim() : 'Unavailable vehicle',
       } : null,
       jobOrder: jobOrder ? { status: jobOrder.status, updatedAt: jobOrder.updatedAt.toISOString() } : null,
     };
@@ -207,9 +207,31 @@ export class DispatchService {
 
   async assign(id: string, input: Record<string, unknown>, actor: string) {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actor)) throw new BadRequestException('Unable to identify the assigning user');
+    await this.enforcePermitCrewLock(id, input);
+    // The usual slot and travel-time (double-booking) checks still run for every assignment, permit or not.
     const validated = await this.validateAssignment(id, input);
     await this.enforceTiming(id, validated, input.travelConfirmed === true);
     return this.confirmAssignment(id, validated, actor);
+  }
+
+  /**
+   * A booking that needs a barangay pass / permit is filed under a specific truck and crew, so once it is
+   * assigned Operations can no longer swap them. Dispatch time, garage and delivery type may still change.
+   * A reschedule or cancellation (approved by Admin) clears the assignment and lifts the lock.
+   */
+  private async enforcePermitCrewLock(id: string, input: Record<string, unknown>) {
+    requireUuid(id);
+    const [booking, assignment] = await Promise.all([
+      this.bookings.get(id),
+      this.prisma.dispatchAssignment.findUnique({ where: { bookingUuid: id } }),
+    ]);
+    if (!booking.permitRequired || !assignment || !['PENDING', 'CONFIRMED', 'RELEASING'].includes(assignment.state)) return;
+    const requestedHelpers = Array.isArray(input.helperIds) ? (input.helperIds as unknown[]).map(String) : [];
+    const sameHelpers = requestedHelpers.length === assignment.helperIds.length &&
+      [...requestedHelpers].sort().join('|') === [...assignment.helperIds].sort().join('|');
+    if (String(input.vehicleId ?? '') !== assignment.vehicleId || String(input.driverId ?? '') !== assignment.driverId || !sameHelpers) {
+      throw new ConflictException('This booking requires a permit, so its truck, driver and helpers are locked once assigned. You can still change the dispatch time, garage and delivery type.');
+    }
   }
 
   async validateAssignment(id: string, input: Record<string, unknown>) {
@@ -246,7 +268,7 @@ export class DispatchService {
     const [vehicles, drivers, helpers] = await Promise.all([this.fleet.vehicles(), this.fleet.drivers(), this.fleet.helpers()]);
     return {
       dispatchTime, garage, deliveryType, vehicleId, driverId, helperIds: helperIds as string[],
-      vehicleLabel: vehicles.find((item) => item.id === vehicleId)?.plateNumber ?? vehicleId,
+      vehicleLabel: vehicles.find((item) => item.id === vehicleId)?.plateNumber ?? 'Unavailable vehicle',
       driverName: drivers.find((item) => item.id === driverId)?.fullName ?? driverId,
       helperNames: (helperIds as string[]).map((helperId) => helpers.find((item) => item.id === helperId)?.fullName ?? helperId),
     };
@@ -456,7 +478,7 @@ export class DispatchService {
     const updated = await this.prisma.dispatchJobOrder.update({ where: { id }, data: { status: 'Distributed', updatedAt: new Date() } });
     if (!alreadyDistributed) {
       const key = process.env.BMS_INTERNAL_SERVICE_KEY;
-      const root = process.env.BOOKING_API_URL || 'http://127.0.0.1:3002';
+      const root = process.env.BOOKING_API_URL || 'http://127.0.0.1:3021';
       if (key && key.length >= 32) {
         try {
           await fetch(new URL(`/internal/booking/${item.bookingUuid}/tracking-update`, root), {

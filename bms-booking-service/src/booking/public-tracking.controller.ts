@@ -1,4 +1,4 @@
-﻿import { Controller, Get, NotFoundException, Param, Query } from '@nestjs/common';
+import { Controller, Get, NotFoundException, Param, Query } from '@nestjs/common';
 import { BookingService } from './booking.service';
 
 @Controller('public/tracking')

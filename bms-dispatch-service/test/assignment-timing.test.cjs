@@ -106,12 +106,13 @@ const IDS = {
 };
 
 // Runs the real assign() with an existing booking at 8:00 AM using the given truck and crew.
-function assignScenario({ pickupTime, routeMinutes = 40, routeFails = false }) {
-  const record = (id, bookingNo, preferredTime) => ({
-    id, bookingId: bookingNo, bookingNo, date: '2026-12-01', preferredTime,
+// `permit` marks the booking being assigned as needing a permit; `current` is its existing assignment, if any.
+function assignScenario({ pickupTime, routeMinutes = 40, routeFails = false, permit = false, current = null, otherPermit = false }) {
+  const record = (id, bookingNo, preferredTime, permitRequired = false) => ({
+    id, bookingId: bookingNo, bookingNo, date: '2026-12-01', preferredTime, permitRequired,
     pickupAddress: `${bookingNo} pickup`, deliveryAddress: `${bookingNo} dropoff`,
   });
-  const records = { [IDS.target]: record(IDS.target, 'NEW', pickupTime), [IDS.other]: record(IDS.other, 'EXISTING', '8:00 AM') };
+  const records = { [IDS.target]: record(IDS.target, 'NEW', pickupTime, permit), [IDS.other]: record(IDS.other, 'EXISTING', '8:00 AM', otherPermit) };
   const lookups = [];
   const bookings = {
     get: async (id) => records[id],
@@ -122,10 +123,13 @@ function assignScenario({ pickupTime, routeMinutes = 40, routeFails = false }) {
     },
   };
   const queries = [];
-  const prisma = { dispatchAssignment: { findMany: async ({ where }) => {
-    queries.push(where);
-    return [{ bookingUuid: IDS.other, vehicleId: IDS.truck, driverId: IDS.driver, helperIds: [IDS.helper], state: 'CONFIRMED' }];
-  } } };
+  const prisma = { dispatchAssignment: {
+    findMany: async ({ where }) => {
+      queries.push(where);
+      return [{ bookingUuid: IDS.other, vehicleId: IDS.truck, driverId: IDS.driver, helperIds: [IDS.helper], state: 'CONFIRMED' }];
+    },
+    findUnique: async ({ where }) => (where.bookingUuid === IDS.target ? current : null),
+  } };
   const service = new DispatchService(prisma, bookings, {});
   let confirmed = false;
   service.validateAssignment = async (_id, input) => input;
@@ -195,7 +199,7 @@ test('travel lookups are reused so repeat checks do not pay Google again', async
   assert.equal(run.lookups.length, 2);
 });
 
-test('a sample that joined the real fleet appears once, with no made-up crew', async () => {
+test('only authoritative fleet vehicles appear, with no sample-only vehicles or made-up crew', async () => {
   const sample = (plateNumber) => ({
     id: `sample-${plateNumber}`, plateNumber, alias: 'Unit', brand: null, model: null, truckTypeId: '10ft. Closed Van', capacityKg: 1500,
     dimensions: '', requiredHelpersMin: 1, requiredHelpersMax: 1, status: 'assigned', crew: [{ id: 'x', name: 'Made Up', role: 'Driver' }],
@@ -211,8 +215,8 @@ test('a sample that joined the real fleet appears once, with no made-up crew', a
     vehicles: async () => [{ id: 'real-id', plateNumber: 'NCF-7716', status: 'AVAILABLE', capacity: '0', requiredHelpers: 2 }],
     drivers: async () => [],
   };
-  const rows = await new FleetService(prisma, { list: async () => [] }, provider).vehicleAvailability();
-  assert.deepEqual(rows.map((row) => row.plateNumber), ['NCF-7716', 'ONLY-SAMPLE']);
+  const rows = await new FleetService(prisma, { lookup: async()=>new Map() }, { list: async () => [] }, provider).vehicleAvailability();
+  assert.deepEqual(rows.map((row) => row.plateNumber), ['NCF-7716']);
   assert.equal(rows[0].id, 'real-id');
   assert.equal(rows[0].driver, null);
   assert.equal(rows[0].currentAssignment, null);
@@ -234,10 +238,77 @@ test('trucks and crew only show as busy on the date they are booked', async () =
       vehicles: async () => [{ id: vehicleId, status: 'AVAILABLE' }],
       drivers: async () => [{ id: driverId, status: 'Available' }],
     };
-    const service = new FleetService(prisma, {}, provider);
+    const service = new FleetService(prisma, { lookup: async()=>new Map() }, {}, provider);
     return { vehicle: (await service.vehicles())[0].isAssigned, driver: (await service.drivers())[0].status, helper: (await service.helpers())[0].status };
   };
   assert.deepEqual(await run(today), { vehicle: true, driver: 'On Duty', helper: 'On Duty' });
   assert.deepEqual(await run('2020-01-01'), { vehicle: false, driver: 'Available', helper: 'Available' });
   assert.deepEqual(await run('2099-12-31'), { vehicle: false, driver: 'Available', helper: 'Available' });
+});
+
+// --- Permit bookings: truck, driver and helpers are locked once assigned ---
+const lockedCrew = { vehicleId: IDS.otherTruck, driverId: IDS.otherDriver, helperIds: [IDS.otherHelper] };
+const assignedPermit = { bookingUuid: IDS.target, state: 'CONFIRMED', ...lockedCrew };
+
+test('a permit booking that is already assigned refuses a different truck, driver or helper', async () => {
+  const changes = [
+    { ...lockedCrew, vehicleId: IDS.truck },
+    { ...lockedCrew, driverId: IDS.driver },
+    { ...lockedCrew, helperIds: [IDS.helper] },
+    { ...lockedCrew, helperIds: [IDS.otherHelper, IDS.helper] },
+  ];
+  for (const change of changes) {
+    const run = assignScenario({ pickupTime: '1:00 PM', permit: true, current: assignedPermit });
+    await assert.rejects(run.service.assign(IDS.target, change, IDS.actor), /requires a permit/);
+    assert.equal(run.wasConfirmed(), false);
+  }
+});
+
+test('a locked permit booking can still change its dispatch time with the same truck and crew', async () => {
+  const run = assignScenario({ pickupTime: '8:00 AM', permit: true, current: assignedPermit });
+  await run.service.assign(IDS.target, { ...lockedCrew, helperIds: [...lockedCrew.helperIds], dispatchTime: '07:30' }, IDS.actor);
+  assert.equal(run.wasConfirmed(), true);
+});
+
+test('the lock does not apply before the permit booking is first assigned', async () => {
+  const run = assignScenario({ pickupTime: '8:00 AM', permit: true, current: null });
+  await run.service.assign(IDS.target, lockedCrew, IDS.actor);
+  assert.equal(run.wasConfirmed(), true);
+});
+
+test('the lock lifts after a reschedule or cancellation clears the assignment', async () => {
+  // 1:00 PM leaves room after EXISTING (8:00 AM), so only the permit lock could refuse the new truck.
+  const run = assignScenario({ pickupTime: '1:00 PM', permit: true, current: { ...assignedPermit, state: 'REJECTED' } });
+  await run.service.assign(IDS.target, { ...lockedCrew, vehicleId: IDS.truck }, IDS.actor);
+  assert.equal(run.wasConfirmed(), true);
+});
+
+test('bookings without a permit can still change truck and crew after assignment', async () => {
+  // Switching to the crew EXISTING uses at 8:00 AM fits at 1:00 PM, so nothing should refuse it.
+  const run = assignScenario({ pickupTime: '1:00 PM', permit: false, current: assignedPermit });
+  await run.service.assign(IDS.target, sameCrew, IDS.actor);
+  assert.equal(run.wasConfirmed(), true);
+});
+
+test('double-booking still applies to a locked permit booking: a nearby job fits, a tight one does not', async () => {
+  // EXISTING (8:00 AM) uses the same truck and crew as the locked permit booking.
+  const permitWithSharedCrew = { bookingUuid: IDS.target, state: 'CONFIRMED', ...sameCrew };
+  const nearby = assignScenario({ pickupTime: '1:00 PM', permit: true, current: permitWithSharedCrew });
+  await nearby.service.assign(IDS.target, sameCrew, IDS.actor);
+  assert.equal(nearby.wasConfirmed(), true);
+  assert.equal(nearby.lookups.length, 2);
+
+  const tooTight = assignScenario({ pickupTime: '9:00 AM', permit: true, current: permitWithSharedCrew });
+  await assert.rejects(tooTight.service.assign(IDS.target, sameCrew, IDS.actor), /EXISTING/);
+  const tooFar = assignScenario({ pickupTime: '1:00 PM', routeMinutes: 120, permit: true, current: permitWithSharedCrew });
+  await assert.rejects(tooFar.service.assign(IDS.target, sameCrew, IDS.actor), /EXISTING/);
+});
+
+test('a new booking can share the truck and crew of a permit booking only when it is close enough', async () => {
+  const close = assignScenario({ pickupTime: '1:00 PM', otherPermit: true });
+  await close.service.assign(IDS.target, sameCrew, IDS.actor);
+  assert.equal(close.wasConfirmed(), true);
+  const far = assignScenario({ pickupTime: '1:00 PM', routeMinutes: 120, otherPermit: true });
+  await assert.rejects(far.service.assign(IDS.target, sameCrew, IDS.actor), /EXISTING/);
+  assert.equal(far.wasConfirmed(), false);
 });

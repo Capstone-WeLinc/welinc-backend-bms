@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { JwtModule } from '@nestjs/jwt';
+import { BmsAuthModule } from './auth/bms-auth.module';
+import { validateEnv } from './config/env';
 import { PrismaService } from './prisma.service';
 import { BookingAuthGuard } from './booking-auth.guard';
 import { HealthController } from './health.controller';
@@ -19,7 +20,7 @@ import { WelincWebhookService } from './webhook/welinc-webhook.service';
 import { AuditController, AuditProvider } from './audit';
 
 @Module({
-  imports: [ConfigModule.forRoot({ isGlobal: true }), JwtModule.register({})],
+  imports: [ConfigModule.forRoot({ isGlobal: true, validate: raw => validateEnv({ ...raw, BMS_BOOKING_HOST: 'true' }) }), BmsAuthModule],
   controllers: [HealthController, BookingController, ApprovalsController, InternalBookingController, PublicTrackingController, CatalogController, WelincWebhookController, AuditController],
   providers: [PrismaService, BookingAuthGuard, BookingService, ApprovalsService, CustomerNotificationService, BookingRouteService, CatalogService, WelincWebhookService, AuditProvider],
 })

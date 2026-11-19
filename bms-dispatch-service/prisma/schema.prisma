@@ -84,6 +84,7 @@ model VehicleAvailabilitySampleVehicle {
 }
 
 model Helper {
+  userId String? @unique @map("user_id") @db.Uuid
   id               String   @id @default(uuid()) @db.Uuid
   empId            String   @unique @map("emp_id") @db.VarChar(40)
   name             String   @db.VarChar(100)
@@ -113,4 +114,53 @@ model AuditEvent {
 
   @@index([createdAt])
   @@map("audit_events")
+}
+
+model Driver {
+  id String @id @default(uuid()) @db.Uuid
+  userId String? @unique @map("user_id") @db.Uuid
+  empId String @unique @map("emp_id") @db.VarChar(40)
+  name String @db.VarChar(100)
+  initials String? @db.VarChar(10)
+  crewStatus String @default("Available") @map("crew_status") @db.VarChar(40)
+  licenseNumber String @map("license_number") @db.VarChar(50)
+  licenseType String @default("Professional") @map("license_type") @db.VarChar(50)
+  licenseExpiry DateTime? @map("license_expiry") @db.Date
+  contact String? @db.VarChar(80)
+  email String? @db.VarChar(160)
+  address String? @db.Text
+  emergencyName String? @map("emergency_name") @db.VarChar(160)
+  emergencyContact String? @map("emergency_contact") @db.VarChar(80)
+  joinDate DateTime? @map("join_date") @db.Date
+  totalTrips Int @default(0) @map("total_trips")
+  isActive Boolean @default(true) @map("is_active")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  profiles VehicleDispatchProfile[]
+  @@map("drivers")
+}
+model VehicleDispatchProfile {
+  vehicleId String @id @map("vehicle_id") @db.Uuid
+  requiredHelpers Int @default(0) @map("required_helpers")
+  truckTypeId String? @map("truck_type_id") @db.VarChar(80)
+  statusReason String? @map("status_reason") @db.Text
+  statusSince DateTime? @map("status_since") @db.Timestamptz(6)
+  expectedBackAt DateTime? @map("expected_back_at") @db.Timestamptz(6)
+  statusRemarks String? @map("status_remarks") @db.Text
+  driverId String? @map("driver_id") @db.Uuid
+  driver Driver? @relation(fields:[driverId],references:[id])
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
+  @@map("vehicle_dispatch_profiles")
+}
+
+model DemoSeedRecord {
+ datasetKey String @map("dataset_key") @db.VarChar(60)
+ tableName String @map("table_name") @db.VarChar(60)
+ recordId String @map("record_id") @db.VarChar(80)
+ bookingUuid String @map("booking_uuid") @db.Uuid
+ rowHash String @map("row_hash") @db.Char(64)
+ @@id([tableName,recordId])
+ @@index([datasetKey,bookingUuid], map:"bms_demo_seed_records_dataset_idx")
+ @@map("bms_demo_seed_records")
 }

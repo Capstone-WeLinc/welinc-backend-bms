@@ -117,7 +117,7 @@ export class BookingService {
 
   private async assertNotDistributed(id: string) {
     const key = process.env.BMS_INTERNAL_SERVICE_KEY;
-    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3003';
+    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022';
     if (!key || key.length < 32) throw new ConflictException('Dispatch state cannot be checked; update was not applied');
     let response: Response;
     try { response = await fetch(new URL(`/internal/dispatch/booking-state/${id}`, root), { headers: { 'x-bms-service-key': key }, signal: AbortSignal.timeout(5000) }); }
@@ -178,7 +178,7 @@ export class BookingService {
       (input.status !== undefined && input.status !== existing.status);
     if (material && existing.status === 'Assigned') {
       const key = process.env.BMS_INTERNAL_SERVICE_KEY;
-      const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3003';
+      const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022';
       if (!key || key.length < 32) throw new ConflictException('Dispatch state cannot be checked; update was not applied');
       let response: Response;
       try { response = await fetch(new URL(`/internal/dispatch/booking-state/${id}`, root), { headers: { 'x-bms-service-key': key }, signal: AbortSignal.timeout(5000) }); }
@@ -246,7 +246,7 @@ export class BookingService {
 
     let dispatch: { assignment?: Record<string, unknown> | null; jobOrder?: Record<string, unknown> | null } = {};
     const key = process.env.BMS_INTERNAL_SERVICE_KEY;
-    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3003';
+    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022';
     if (key && key.length >= 32) {
       try {
         const response = await fetch(new URL(`/internal/dispatch/tracking/${id}`, root), {

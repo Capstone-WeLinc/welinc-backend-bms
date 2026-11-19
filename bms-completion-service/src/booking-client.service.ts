@@ -4,6 +4,7 @@ export type BookingRecord = {
   id: string; bookingId: string; bookingNo: string; client: string; service: string;
   date: string; status: string; version: number; amount: string | number | null;
   protectiveMaterials: string[];
+  requestedPaymentMethod?: string | null;
 };
 
 @Injectable()
@@ -11,7 +12,7 @@ export class BookingClient {
   private async request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
     const key = process.env.BMS_INTERNAL_SERVICE_KEY;
     if (!key || key.length < 32) throw new ServiceUnavailableException('Internal service identity is not configured');
-    const root = process.env.BOOKING_API_URL || 'http://127.0.0.1:3002';
+    const root = process.env.BOOKING_API_URL || 'http://127.0.0.1:3021';
     let response: Response;
     try {
       response = await fetch(new URL(path, root), {

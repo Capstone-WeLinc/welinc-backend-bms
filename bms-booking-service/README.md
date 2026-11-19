@@ -1,7 +1,20 @@
 # BMS Booking service
 
-This native NestJS API owns bookings, the three BMS booking catalogs, external Welinc booking mappings, and the signed inbound webhook ledger in its own PostgreSQL database on host port `5434`. The API listens on `3002` when started by the root launcher. Public calls arrive through the BMS gateway on `3005`.
+NestJS service on 3021, with its owned PostgreSQL database on host port 5434.
+Browser routes enter through the suite gateway under `/bms/booking`,
+`/bms/approvals` and `/bms/config`. Shared auth's BMS tokens and session checks
+protect office operations; existing BMS role restrictions still apply.
 
-`GET/POST /booking`, `GET/PUT /booking/:id`, and `/bms/config/{booking-services,services-offered,protective-materials}` serve the BMS UI. `POST /integrations/welinc/bookings` verifies exact-body HMAC signatures and applies valid create, edit, and cancel events with event deduplication. `GET /internal/booking`, `GET /internal/booking/:id`, and `POST /internal/booking/:id/commands` support service coordination with `BMS_INTERNAL_SERVICE_KEY`. Commands require a canonical UUID, expected version, and idempotent command ID.
+Booking owns booking records, service/material catalogs, approval work and
+versioned operational/payment holds. Approval names are resolved through
+shared auth's directory API. It does not query an auth database.
 
-Start the full stack with the root `bms-start.bat` or `start.sh`. For manual service work, copy `.env.example` to `.env`, set the local Auth `JWT_SECRET`, a shared `BMS_INTERNAL_SERVICE_KEY` of at least 32 characters, and your own webhook test secret. Then run `npm ci`, `npx prisma migrate deploy`, and `npm run start:dev`. Use `npm run typecheck` and `npm run build` for verification. The webhook sender contract is in the root [Welinc integration guide](../../WELINC_TO_BMS_WEBHOOK_GUIDE.md); the sender remains the Welinc group's responsibility.
+Signed integration webhooks preserve raw bytes and signature/idempotency
+checks. Public customer tracking uses a dedicated required tracking secret.
+Optional mail, webhook and mapping settings are documented in the backend
+root `.env.example`; secret values must stay private.
+
+Start with the workspace BMS Compose file after the shared stack. Configuration
+comes from the backend root environment. Use `npm run build` and
+`npx jest --runInBand` here. See [backend setup](../README.md) and the
+[BMS checklist](../../docs/context/bms/integration-checklist.md).

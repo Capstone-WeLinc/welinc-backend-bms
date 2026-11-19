@@ -7,7 +7,7 @@ export class DispatchClient {
   async postServiceReadyBookingUuids(): Promise<string[]> {
     const key = process.env.BMS_INTERNAL_SERVICE_KEY;
     if (!key || key.length < 32) throw new ServiceUnavailableException('Internal service identity is not configured');
-    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3003';
+    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022';
     try {
       const response = await fetch(new URL('/internal/dispatch/post-service-ready', root), {
         headers: { 'x-bms-service-key': key }, signal: AbortSignal.timeout(8000),
@@ -22,7 +22,7 @@ export class DispatchClient {
   async snapshot(bookingUuid: string): Promise<DispatchSnapshot> {
     const key = process.env.BMS_INTERNAL_SERVICE_KEY;
     if (!key || key.length < 32) throw new ServiceUnavailableException('Internal service identity is not configured');
-    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3003';
+    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022';
     try {
       const [assignment, order] = await Promise.all(['assignments', 'job-orders'].map((kind) => fetch(
         new URL(`/internal/dispatch/${kind}/${encodeURIComponent(bookingUuid)}`, root),

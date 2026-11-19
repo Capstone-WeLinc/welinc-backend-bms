@@ -1,16 +1,11 @@
-import { createHmac, randomUUID } from 'node:crypto';
 import { config } from 'dotenv';
 
 config({ quiet: true });
-const base = process.env.DISPATCH_TEST_URL ?? 'http://127.0.0.1:3003';
-if (!process.env.JWT_SECRET) throw new Error('Configure a local JWT_SECRET');
+const base = process.env.DISPATCH_TEST_URL ?? 'http://127.0.0.1:3022';
 
-function token(role, system = 'BMS') {
-  const encode = (value) => Buffer.from(JSON.stringify(value)).toString('base64url');
-  const head = encode({ alg: 'HS256', typ: 'JWT' });
-  const body = encode({ sub: `smoke-${randomUUID()}`, roles: [{ role, system }], exp: Math.floor(Date.now() / 1000) + 120 });
-  const signature = createHmac('sha256', process.env.JWT_SECRET).update(`${head}.${body}`).digest('base64url');
-  return `${head}.${body}.${signature}`;
+function token(role,system='BMS') {
+  const name=system==='BMS'?`BMS_TEST_${role}_ACCESS_TOKEN`:'BMS_TEST_FOREIGN_ACCESS_TOKEN';
+  const value=process.env[name];if(!value)throw new Error(`Provide ${name} from a real suite test session`);return value;
 }
 
 async function call(path, bearer, method = 'GET') {
@@ -25,7 +20,7 @@ function expect(label, actual, status) {
 
 expect('readiness', await call('/health/ready'), 200);
 expect('unauthenticated assignments', await call('/dispatch/assignments'), 401);
-expect('foreign system role', await call('/dispatch/assignments', token('OPERATIONS', 'OTHER')), 403);
+expect('foreign system role', await call('/dispatch/assignments', token('OPERATIONS', 'OTHER')), 401);
 expect('customer support role', await call('/dispatch/assignments', token('CUSTOMER_SUPPORT')), 403);
 const operations = token('OPERATIONS');
 const assignments = await call('/dispatch/assignments', operations);

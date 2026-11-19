@@ -1,4 +1,6 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { DirectoryClient } from '../auth/directory.client';
+import { permanentCrew } from './vmms-fleet.provider';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma.service';
 import { BookingClient } from '../booking-client.service';
 import { FLEET_PROVIDER, type FleetProvider } from './fleet-provider';
@@ -15,7 +17,7 @@ function parseCapacityKg(value: unknown): number | null {
 function vehicleDimensions(type?: string | null) {
   if (type === '6W 14ft. with Lifter') return '14 x 7 x 6 FT.';
   if (type === '10ft. Closed Van') return '10 x 6 x 6 FT.';
-  if (type === '4W L300 FB Van') return `4W - 7'5\" x 4 x 4 FT.`;
+  if (type === '4W L300 FB Van') return `4W - 7'5" x 4 x 4 FT.`;
   return null;
 }
 
@@ -55,6 +57,7 @@ function optionalDate(value: unknown, name: string) {
 export class FleetService {
   constructor(
     private readonly prisma: PrismaService,
+    private readonly directory: DirectoryClient,
     private readonly bookings: BookingClient,
     @Inject(FLEET_PROVIDER) private readonly provider: FleetProvider,
   ) {}
@@ -72,9 +75,9 @@ export class FleetService {
     return rows.map((vehicle) => ({ ...vehicle, isAssigned: assigned.has(String(vehicle.id)) }));
   }
 
-  /** View-only inventory backed by the real fleet and temporary sample rows. */
+  /** View-only inventory from VMMS, enriched with BMS assignment details. */
   async vehicleAvailability() {
-    const [vehicles, assignments, bookings, drivers, helpers, sampleVehicles] = await Promise.all([
+    const [vehicles, assignments, bookings, drivers, helpers] = await Promise.all([
       this.vehicles(),
       this.prisma.dispatchAssignment.findMany({
         where: { state: 'CONFIRMED', vehicleId: { not: null } },
@@ -83,7 +86,6 @@ export class FleetService {
       this.bookings.list(),
       this.provider.drivers(),
       this.helpers(),
-      this.prisma.vehicleAvailabilitySampleVehicle.findMany({ orderBy: { plateNumber: 'asc' } }),
     ]);
     const bookingById = new Map(bookings.map((booking) => [booking.id, booking]));
     const jobOrders = await this.prisma.dispatchJobOrder.findMany({
@@ -141,43 +143,7 @@ export class FleetService {
       };
     });
 
-    // Sample rows are display-only. A sample that joined the real fleet shows only its real record.
-    const fleetPlates = new Set(vehicles.map((vehicle) => vehicle.plateNumber));
-    const sampleRows = sampleVehicles.filter((vehicle) => !fleetPlates.has(vehicle.plateNumber)).map((vehicle) => {
-      const crew = Array.isArray(vehicle.crew) ? vehicle.crew as Array<{ id?: string; name?: string; role?: string }> : [];
-      const driver = crew.find((member) => member.role?.toLowerCase() === 'driver');
-      const helpers = crew.filter((member) => member.role?.toLowerCase() === 'helper');
-      return {
-        id: vehicle.id,
-        plateNumber: vehicle.plateNumber,
-        alias: vehicle.alias,
-        brand: vehicle.brand,
-        model: vehicle.model,
-        type: vehicle.truckTypeId,
-        truckTypeId: vehicle.truckTypeId,
-        capacity: vehicle.capacityKg == null ? '' : `${vehicle.capacityKg} kg`,
-        capacityKg: vehicle.capacityKg,
-        dimensions: vehicle.dimensions,
-        requiredHelpers: vehicle.requiredHelpersMax,
-        requiredHelpersMin: vehicle.requiredHelpersMin,
-        requiredHelpersMax: vehicle.requiredHelpersMax,
-        status: vehicle.status === 'assigned' ? 'Assigned' : vehicle.status.replaceAll('_', ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
-        isAssigned: vehicle.status === 'assigned',
-        isSample: true,
-        driver: driver ? { id: driver.id ?? '', name: driver.name ?? '', initials: (driver.name ?? '').split(/\s+/).map((part) => part[0]).join('').slice(0, 2) } : null,
-        helpers: helpers.map((member) => ({ id: member.id ?? '', name: member.name ?? '', initials: (member.name ?? '').split(/\s+/).map((part) => part[0]).join('').slice(0, 2) })),
-        currentAssignment: vehicle.currentAssignment,
-        upcomingSchedule: vehicle.upcomingSchedule,
-        statusDetails: vehicle.statusReason || vehicle.statusSince || vehicle.expectedBackAt || vehicle.statusRemarks ? {
-          reason: vehicle.statusReason,
-          since: vehicle.statusSince,
-          expectedBack: vehicle.expectedBackAt,
-          remarks: vehicle.statusRemarks,
-        } : null,
-      };
-    });
-
-    return [...realRows, ...sampleRows];
+    return realRows;
   }
 
   async vehicleAvailabilityDetails(id: string) {
@@ -205,7 +171,8 @@ export class FleetService {
       this.prisma.dispatchAssignment.findMany({ where: { state: { in: ['PENDING', 'CONFIRMED', 'RELEASING'] }, serviceDate: manilaToday() }, select: { helperIds: true } }),
     ]);
     const assigned = new Set(activeAssignments.flatMap((item) => item.helperIds));
-    return rows.map((helper) => ({
+    const people = await this.directory.lookup(rows.flatMap(h=>h.userId?[h.userId]:[]));
+    return rows.filter(h=>!h.userId || permanentCrew(people.get(h.userId),'HELPER')).map((helper) => ({
       id: helper.id, empId: helper.empId, fullName: helper.name, initials: helper.initials,
       contact: helper.contact ?? '', email: helper.email ?? '', status: assigned.has(helper.id) ? 'On Duty' : helper.crewStatus,
       totalTrips: helper.totalTrips, joinDate: helper.joinDate?.toISOString().slice(0, 10) ?? '',
@@ -219,7 +186,7 @@ export class FleetService {
       throw new BadRequestException('Assignment requires persisted fleet and crew IDs');
     }
     const { vehicle, driver } = await this.provider.assignmentResources(vehicleId, driverId);
-    if (!vehicle || vehicle.status !== 'AVAILABLE') throw new BadRequestException('Vehicle is unavailable');
+    if (!vehicle || vehicle.status !== 'AVAILABLE') throw new ConflictException({code:'VEHICLE_UNAVAILABLE',message:'Vehicle is unavailable'});
     if (!driver || !['Available', 'On Duty'].includes(driver.status ?? 'Available')) {
       throw new BadRequestException('Driver is unavailable');
     }
@@ -227,7 +194,8 @@ export class FleetService {
       throw new BadRequestException('Required helpers are missing or duplicated');
     }
     const helpers = await this.prisma.helper.findMany({ where: { id: { in: helperIds }, isActive: true } });
-    if (helpers.length !== helperIds.length) throw new BadRequestException('Helper is unavailable');
+    const people = await this.directory.lookup(helpers.flatMap(h=>h.userId?[h.userId]:[]));
+    if (helpers.length !== helperIds.length || helpers.some(h=>h.userId && !permanentCrew(people.get(h.userId),'HELPER'))) throw new BadRequestException('Helper is unavailable');
     return { plateNumber: vehicle.plateNumber };
   }
 
@@ -252,12 +220,12 @@ export class FleetService {
     if (!helper?.isActive) throw new NotFoundException('Helper not found');
     await this.prisma.helper.update({ where: { id }, data: {
       ...(body.fullName !== undefined && { name: required(body.fullName, 'fullName', 100) }),
-      ...(body.contact !== undefined && { contact: required(body.contact, 'contact', 80) }),
+      ...(body.contact !== undefined && { contact: body.contact ? required(body.contact, 'contact', 80) : null }),
       ...(body.email !== undefined && { email: body.email ? required(body.email, 'email', 160) : null }),
       ...(body.status !== undefined && { crewStatus: required(body.status, 'status', 40) }),
       ...(body.joinDate !== undefined && { joinDate: optionalDate(body.joinDate, 'joinDate') }),
-      ...(body.emergencyName !== undefined && { emergencyName: required(body.emergencyName, 'emergencyName', 160) }),
-      ...(body.emergencyContact !== undefined && { emergencyContact: required(body.emergencyContact, 'emergencyContact', 80) }),
+      ...(body.emergencyName !== undefined && { emergencyName: body.emergencyName ? required(body.emergencyName, 'emergencyName', 160) : null }),
+      ...(body.emergencyContact !== undefined && { emergencyContact: body.emergencyContact ? required(body.emergencyContact, 'emergencyContact', 80) : null }),
     } });
     return (await this.helpers()).find((item) => item.id === id);
   }

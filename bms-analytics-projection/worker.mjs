@@ -1,12 +1,17 @@
+import { createServer } from 'node:http';
 import pg from 'pg';
+import { workerConfig } from './config.mjs';
+const settings = workerConfig(process.env);
 
-const url = process.env.ANALYTICS_READ_MODEL_DATABASE_URL;
-if (!url || !['localhost', '127.0.0.1', '[::1]'].includes(new URL(url).hostname)) {
-  throw new Error('Analytics projection requires the disposable local shared database');
-}
 const key = process.env.BMS_INTERNAL_SERVICE_KEY;
 if (!key || key.length < 32) throw new Error('BMS_INTERNAL_SERVICE_KEY is required');
-const pool = new pg.Pool({ connectionString: url });
+const pool = new pg.Pool({
+  connectionString: settings.databaseUrl,
+  max: settings.max,
+  connectionTimeoutMillis: 1900,
+});
+pool.on('error',()=>console.error('Projection database connection closed'));
+let lastSuccess=0;
 
 async function source(root, path) {
   const response = await fetch(new URL(path, root), {
@@ -20,9 +25,9 @@ function moneyCents(value) { return Math.round(Number(value ?? 0) * 100); }
 
 export async function projectOnce() {
   const [bookings, assignments, completion] = await Promise.all([
-    source(process.env.BOOKING_API_URL || 'http://127.0.0.1:3002', '/internal/booking'),
-    source(process.env.DISPATCH_API_URL || 'http://127.0.0.1:3003', '/internal/dispatch/assignments'),
-    source(process.env.COMPLETION_API_URL || 'http://127.0.0.1:3004', '/internal/completion/read-model'),
+    source(process.env.BOOKING_API_URL || 'http://127.0.0.1:3021', '/internal/booking'),
+    source(process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022', '/internal/dispatch/assignments'),
+    source(process.env.COMPLETION_API_URL || 'http://127.0.0.1:3023', '/internal/completion/read-model'),
   ]);
   const assignmentByBooking = new Map(assignments.map((row) => [row.bookingUuid, row]));
   const workByBooking = new Map(completion.work.map((row) => [row.bookingUuid, row]));
@@ -37,8 +42,6 @@ export async function projectOnce() {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query(`CREATE TABLE IF NOT EXISTS bms_projection_rows (
-      booking_uuid UUID PRIMARY KEY, projected_at TIMESTAMPTZ NOT NULL DEFAULT now())`);
     const ids = [];
     for (const booking of bookings) {
       ids.push(booking.id);
@@ -69,7 +72,7 @@ export async function projectOnce() {
           completion_notes=EXCLUDED.completion_notes, issue_reported=EXCLUDED.issue_reported,
           issue_details=EXCLUDED.issue_details, finalized_at=EXCLUDED.finalized_at, finalized_by=EXCLUDED.finalized_by`,
         [booking.id, booking.bookingId, booking.bookingNo, booking.client, booking.service,
-          `${booking.date}T00:00:00.000Z`, booking.pickupAddress, booking.deliveryAddress,
+          booking.date, booking.pickupAddress, booking.deliveryAddress,
           booking.status, booking.amount, booking.createdAt, booking.updatedAt,
           booking.serviceType, booking.address, paymentStatus, lastCollection?.method ?? null,
           booking.fullName, booking.contact, booking.email, booking.notes,
@@ -108,9 +111,10 @@ export async function projectOnce() {
 if (process.argv[1]?.endsWith('worker.mjs')) {
   const once = process.argv.includes('--once');
   const run = async () => {
-    try { console.log(JSON.stringify({ status: 'ok', ...await projectOnce() })); }
-    catch (error) { console.error(error); if (once) process.exitCode = 1; }
+    try { const result=await projectOnce();lastSuccess=Date.now();console.log(JSON.stringify({ status: 'ok', ...result })); }
+    catch (error) { const code=/^[0-9A-Z]{5}$/.test(error?.code??'')?error.code:'UPSTREAM_OR_DATABASE';console.error('Analytics projection failed ('+code+')'); if (once) process.exitCode = 1; }
   };
+  if (!once) createServer((_req,res)=>{const ok=lastSuccess>0 && Date.now()-lastSuccess<Math.max(30000,3*Number(process.env.PROJECTION_INTERVAL_MS??10000));res.writeHead(ok?200:503,{'content-type':'application/json'});res.end(JSON.stringify({status:ok?'ok':'unavailable'}));}).listen(Number(process.env.PORT??3024),'0.0.0.0');
   await run();
   if (!once) {
     const interval = Math.max(1000, Number(process.env.PROJECTION_INTERVAL_MS) || 10000);

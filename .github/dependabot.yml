@@ -1,27 +1,161 @@
 version: 2
 updates:
-  # npm: one entry per service, each has its own package-lock.json
+  # Weekly version updates into development, one entry per package-lock.json.
+  # Security updates still come as soon as an alert opens.
   - package-ecosystem: npm
-    directories:
-      - /bms-gateway
-      - /bms-booking-service
-      - /bms-dispatch-service
-      - /bms-completion-service
-      - /bms-analytics-projection
+    directory: /
+    target-branch: development
     schedule:
       interval: weekly
       day: monday
       timezone: Asia/Manila
     open-pull-requests-limit: 5
     groups:
+      # NestJS packages must move together (each @nestjs/* peers on the others), so one pull
+      # request for all of them, a major version included. A group is matched before the next one.
+      nestjs:
+        patterns: ["@nestjs/*"]
+      # Minor and patch bumps of everything else come as one pull request; a major bump comes
+      # on its own so its breaking changes get looked at. To skip a major you don't want yet,
+      # comment "@dependabot ignore this major version" on its pull request.
       npm-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # The types follow the Node version we run (24, from .nvmrc), not the newest Node
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     commit-message:
       prefix: "chore(deps)"
 
-  # GitHub Actions used by workflows in .github/workflows
+  - package-ecosystem: npm
+    directory: /bms-gateway
+    target-branch: development
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Manila
+    open-pull-requests-limit: 5
+    groups:
+      # NestJS packages must move together (each @nestjs/* peers on the others), so one pull
+      # request for all of them, a major version included. A group is matched before the next one.
+      nestjs:
+        patterns: ["@nestjs/*"]
+      # Minor and patch bumps of everything else come as one pull request; a major bump comes
+      # on its own so its breaking changes get looked at. To skip a major you don't want yet,
+      # comment "@dependabot ignore this major version" on its pull request.
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # The types follow the Node version we run (24, from .nvmrc), not the newest Node
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: /bms-booking-service
+    target-branch: development
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Manila
+    open-pull-requests-limit: 5
+    groups:
+      # NestJS packages must move together (each @nestjs/* peers on the others), so one pull
+      # request for all of them, a major version included. A group is matched before the next one.
+      nestjs:
+        patterns: ["@nestjs/*"]
+      # Minor and patch bumps of everything else come as one pull request; a major bump comes
+      # on its own so its breaking changes get looked at. To skip a major you don't want yet,
+      # comment "@dependabot ignore this major version" on its pull request.
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # The types follow the Node version we run (24, from .nvmrc), not the newest Node
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: /bms-dispatch-service
+    target-branch: development
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Manila
+    open-pull-requests-limit: 5
+    groups:
+      # NestJS packages must move together (each @nestjs/* peers on the others), so one pull
+      # request for all of them, a major version included. A group is matched before the next one.
+      nestjs:
+        patterns: ["@nestjs/*"]
+      # Minor and patch bumps of everything else come as one pull request; a major bump comes
+      # on its own so its breaking changes get looked at. To skip a major you don't want yet,
+      # comment "@dependabot ignore this major version" on its pull request.
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # The types follow the Node version we run (24, from .nvmrc), not the newest Node
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: /bms-completion-service
+    target-branch: development
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Manila
+    open-pull-requests-limit: 5
+    groups:
+      # NestJS packages must move together (each @nestjs/* peers on the others), so one pull
+      # request for all of them, a major version included. A group is matched before the next one.
+      nestjs:
+        patterns: ["@nestjs/*"]
+      # Minor and patch bumps of everything else come as one pull request; a major bump comes
+      # on its own so its breaking changes get looked at. To skip a major you don't want yet,
+      # comment "@dependabot ignore this major version" on its pull request.
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # The types follow the Node version we run (24, from .nvmrc), not the newest Node
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  - package-ecosystem: npm
+    directory: /bms-analytics-projection
+    target-branch: development
+    schedule:
+      interval: weekly
+      day: monday
+      timezone: Asia/Manila
+    open-pull-requests-limit: 5
+    groups:
+      # NestJS packages must move together (each @nestjs/* peers on the others), so one pull
+      # request for all of them, a major version included. A group is matched before the next one.
+      nestjs:
+        patterns: ["@nestjs/*"]
+      # Minor and patch bumps of everything else come as one pull request; a major bump comes
+      # on its own so its breaking changes get looked at. To skip a major you don't want yet,
+      # comment "@dependabot ignore this major version" on its pull request.
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      # The types follow the Node version we run (24, from .nvmrc), not the newest Node
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+    commit-message:
+      prefix: "chore(deps)"
+
+  # Keeps actions/checkout and actions/setup-node current in ci.yml
   - package-ecosystem: github-actions
     directory: /
+    target-branch: development
     schedule:
       interval: weekly
       day: monday

@@ -1,7 +1,7 @@
-﻿import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 
 function trackingSecret() {
-  const secret = process.env.CUSTOMER_TRACKING_SECRET || process.env.JWT_SECRET;
+  const secret = process.env.CUSTOMER_TRACKING_SECRET;
   if (!secret || secret.length < 32) throw new Error('Customer tracking secret must contain at least 32 characters');
   return secret;
 }
