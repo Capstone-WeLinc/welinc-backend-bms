@@ -3,6 +3,7 @@ import { ConflictException, Injectable, NotFoundException, ServiceUnavailableExc
 export type BookingRecord = {
   id: string; bookingId: string; bookingNo: string; client: string; service: string;
   date: string; status: string; version: number; amount: string | number | null;
+  downpayment?: string | number | null;
   protectiveMaterials: string[];
   requestedPaymentMethod?: string | null;
 };
