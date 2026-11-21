@@ -7,7 +7,8 @@ import { DirectoryClient } from '../auth/directory.client';
 import { PrismaService } from '../prisma.service';
 import { CustomerNotificationService } from './customer-notification.service';
 
-type ApprovalType = 'booking' | 'collection' | 'refund';
+type ApprovalType = 'booking' | 'collection' | 'refund' | 'crew';
+const APPROVAL_TYPES: string[] = ['booking', 'collection', 'refund', 'crew'];
 type ChangeType = 'reschedule' | 'cancel';
 type QueueItem = {
   id: string; type: ApprovalType; subtype: string | null; bookingId?: string;
@@ -118,6 +119,42 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
     return data;
   }
 
+  /** Crew leave and emergency requests live in the dispatch service (spec bms/0003). */
+  private async crewLeave(path: string, init: RequestInit = {}) {
+    const key = process.env.BMS_INTERNAL_SERVICE_KEY;
+    if (!key || key.length < 32) throw new ServiceUnavailableException('Internal BMS service authentication is not configured');
+    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022';
+    let response: Response;
+    try {
+      response = await fetch(new URL(`/internal/dispatch/crew-leave${path}`, root), {
+        ...init,
+        headers: { 'content-type': 'application/json', 'x-bms-service-key': key, ...(init.headers ?? {}) },
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch {
+      throw new ServiceUnavailableException('Crew leave service is unavailable');
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const message = jsonObject(data).message;
+      if (response.status === 409 || response.status === 404) throw new ConflictException(message || 'Approval item changed; refresh and retry');
+      if (response.status === 400) throw new BadRequestException(message || 'Invalid approval request');
+      if (response.status === 403) throw new ForbiddenException(message || 'This approval action is not allowed');
+      throw new ServiceUnavailableException(message || 'Crew leave service is unavailable');
+    }
+    return data;
+  }
+
+  /** Crew items for the queue. If dispatch is down the other approvals still load. */
+  private async crewItems(approved: boolean): Promise<QueueItem[]> {
+    try {
+      const items = jsonObject(await this.crewLeave(approved ? '?status=approved' : '')).items;
+      return Array.isArray(items) ? items as QueueItem[] : [];
+    } catch {
+      return [];
+    }
+  }
+
   private async dispatch(path: string, body: unknown) {
     const key = process.env.BMS_INTERNAL_SERVICE_KEY;
     if (!key || key.length < 32) throw new Error('Internal BMS service authentication is not configured');
@@ -205,20 +242,22 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async allPending(): Promise<QueueItem[]> {
-    const [bookings, completion] = await Promise.all([
-      this.bookingQueueRows(), this.completion('/internal/completion/approvals'),
+    const [bookings, completion, crew] = await Promise.all([
+      this.bookingQueueRows(), this.completion('/internal/completion/approvals'), this.crewItems(false),
     ]);
     const externalItems = jsonObject(completion).items;
-    const combined = [...bookings, ...(Array.isArray(externalItems) ? externalItems as QueueItem[] : [])];
-    return combined.sort((a, b) => new Date(a.submittedAt).getTime() - new Date(b.submittedAt).getTime());
+    const combined = [...bookings, ...(Array.isArray(externalItems) ? externalItems as QueueItem[] : []), ...crew];
+    // Most recent request first, so new requests are at the top of the Approvals table.
+    return combined.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
   }
 
   private async allApproved(): Promise<QueueItem[]> {
-    const [requests, completion] = await Promise.all([
+    const [requests, completion, crew] = await Promise.all([
       this.prisma.bookingChangeRequest.findMany({
         where: { status: 'Approved', type: { in: APPROVAL_CHANGE_TYPES } }, include: { booking: true }, orderBy: { decidedAt: 'desc' },
       }),
       this.completion('/internal/completion/approvals?status=approved'),
+      this.crewItems(true),
     ]);
     const bookings = requests.flatMap((request) => {
       const booking = request.booking;
@@ -233,7 +272,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
       }];
     });
     const externalItems = jsonObject(completion).items;
-    const combined = [...bookings, ...(Array.isArray(externalItems) ? externalItems as QueueItem[] : [])];
+    const combined = [...bookings, ...(Array.isArray(externalItems) ? externalItems as QueueItem[] : []), ...crew];
     return combined.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
   }
 
@@ -260,15 +299,21 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
       booking: items.filter((item) => item.type === 'booking').length,
       collection: items.filter((item) => item.type === 'collection').length,
       refund: items.filter((item) => item.type === 'refund').length,
+      crew: items.filter((item) => item.type === 'crew').length,
+      emergency: items.filter((item) => item.type === 'crew' && item.subtype === 'emergency').length,
       overdue,
-      oldestAt: items[0]?.submittedAt ?? null,
+      oldestAt: items.at(-1)?.submittedAt ?? null,
       collectionAmount: items.filter((item) => item.type === 'collection').reduce((sum, item) => sum + (item.amount ?? 0), 0),
       refundAmount: items.filter((item) => item.type === 'refund').reduce((sum, item) => sum + (item.amount ?? 0), 0),
     };
   }
 
   async detail(type: ApprovalType, id: string, actor: string, admin: boolean) {
-    if (!['booking', 'collection', 'refund'].includes(type)) throw new BadRequestException('Unsupported approval type');
+    if (!APPROVAL_TYPES.includes(type)) throw new BadRequestException('Unsupported approval type');
+    if (type === 'crew') {
+      if (!admin) throw new ForbiddenException('Only Admin can review crew leave');
+      return this.withCompletionNames(await this.crewLeave(`/${encodeURIComponent(id)}`));
+    }
     if (type !== 'booking') {
       const result = await this.completion(`/internal/completion/approvals/${type}/${encodeURIComponent(id)}?actor=${encodeURIComponent(actor)}&admin=${admin}`);
       return this.withCompletionNames(result);
@@ -292,9 +337,12 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async decide(type: ApprovalType, id: string, actor: string, decision: 'approve' | 'reject', reason = '') {
-    if (!['booking', 'collection', 'refund'].includes(type)) throw new BadRequestException('Unsupported approval type');
+    if (!APPROVAL_TYPES.includes(type)) throw new BadRequestException('Unsupported approval type');
     if (decision === 'reject' && !reason.trim()) throw new BadRequestException('A rejection reason is required');
     if (reason.length > 500) throw new BadRequestException('Reason must be 500 characters or fewer');
+    if (type === 'crew') return this.crewLeave(`/${encodeURIComponent(id)}/${decision}`, {
+      method: 'POST', body: JSON.stringify({ actor, reason }),
+    });
     if (type !== 'booking') return this.completion(`/internal/completion/approvals/${type}/${encodeURIComponent(id)}/${decision}`, {
       method: 'POST', body: JSON.stringify({ actor, reason }),
     });
@@ -366,6 +414,8 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
       amount: asNumber(jsonObject(item.payloadAfter).amount ?? item.booking.amount),
       submittedAt: item.requestedAt.toISOString(), submittedBy: item.requestedBy,
       status: item.status, decisionReason: item.decisionReason,
+      // The CS For Approvals table shows the date a reschedule asks for.
+      requestedDate: item.type === 'reschedule' && isCalendarDate(jsonObject(item.payloadAfter).date) ? jsonObject(item.payloadAfter).date as string : null,
     }));
     const external = jsonObject(completion).items;
     const merged = [...bookingItems, ...(Array.isArray(external) ? external as QueueItem[] : [])];
@@ -375,6 +425,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async withdraw(type: ApprovalType, id: string, actor: string) {
+    if (type === 'crew') throw new BadRequestException('Crew leave is withdrawn by Operations from the Crew Leave page');
     if (type !== 'booking') return this.completion(`/internal/completion/approvals/${type}/${encodeURIComponent(id)}/withdraw`, {
       method: 'POST', body: JSON.stringify({ actor }),
     });
@@ -391,6 +442,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async resubmit(type: ApprovalType, id: string, actor: string, input: Record<string, unknown>) {
+    if (type === 'crew') throw new BadRequestException('File a new crew leave request instead');
     if (type !== 'booking') return this.completion(`/internal/completion/approvals/${type}/${encodeURIComponent(id)}/resubmit`, {
       method: 'POST', body: JSON.stringify({ actor, input }),
     });
