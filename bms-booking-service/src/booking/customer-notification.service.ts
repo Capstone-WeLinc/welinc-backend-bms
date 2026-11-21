@@ -14,6 +14,9 @@ type BookingNotice = {
   address?: string | null;
 };
 
+/** The truck and crew Operations assigned, as sent by Dispatch with the assignment. */
+export type AssignedTeam = { truck?: string; driverName?: string; helperNames: string[]; dispatchTime?: string };
+
 type StatusTone = 'info' | 'success' | 'warning' | 'danger';
 
 /** Everything one customer email says. Each email is complete on its own; nothing depends on a link. */
@@ -43,7 +46,7 @@ const STATUS_UPDATES: Record<string, Omit<EmailContent, 'subject'> & { subjectLi
     preheader: 'A truck and crew are now scheduled for your booking.',
     headline: 'Your truck and crew are assigned',
     status: { label: 'Team assigned', tone: 'info' },
-    paragraphs: ['Good news: a truck and crew have been assigned to your booking. They will head to your pickup address on the scheduled date and time below.'],
+    paragraphs: ['A truck and crew have been assigned to your booking. They will head to your pickup address on the scheduled date and time below.'],
     nextStep: 'Please make sure someone is available at the pickup address and that your items are ready to be loaded.',
   },
   'Pick-up in Progress': {
@@ -135,10 +138,11 @@ export class CustomerNotificationService {
     }, 'booking confirmation');
   }
 
-  async sendTrackingStatusUpdate(booking: BookingNotice, update: string) {
+  async sendTrackingStatusUpdate(booking: BookingNotice, update: string, team?: AssignedTeam) {
     const known = STATUS_UPDATES[update];
+    const teamRows = update === 'Team assigned' && team ? this.teamRows(team) : [];
     const content: EmailContent = known
-      ? { ...known, subject: `${known.subjectLine} (${booking.bookingNo})` }
+      ? { ...known, subject: `${known.subjectLine} (${booking.bookingNo})`, ...(teamRows.length && { highlights: teamRows }) }
       : {
           subject: `Update on your booking (${booking.bookingNo})`,
           preheader: `Booking ${booking.bookingNo} is now: ${update}.`,
@@ -170,6 +174,24 @@ export class CustomerNotificationService {
     } catch (error) {
       this.logger.error(`Could not send booking ${kind} email for ${booking.bookingNo}`, error);
     }
+  }
+
+  /** Who is coming: shown in the "Team assigned" email so the customer knows the truck and crew. */
+  private teamRows(team: AssignedTeam) {
+    const rows: { label: string; value: string }[] = [];
+    if (team.truck) rows.push({ label: 'Truck', value: team.truck });
+    if (team.driverName) rows.push({ label: 'Driver', value: team.driverName });
+    if (team.helperNames.length) rows.push({ label: team.helperNames.length === 1 ? 'Helper' : 'Helpers', value: team.helperNames.join(', ') });
+    if (team.dispatchTime) rows.push({ label: 'Dispatch time', value: this.formatTime(team.dispatchTime) });
+    return rows;
+  }
+
+  /** "14:00" → "2:00 PM"; anything else is shown as given. */
+  private formatTime(value: string) {
+    const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value);
+    if (!match) return value;
+    const hours = Number(match[1]);
+    return `${hours % 12 || 12}:${match[2]} ${hours < 12 ? 'AM' : 'PM'}`;
   }
 
   /** The booking facts every email repeats, so the customer never has to look anything up. */

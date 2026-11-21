@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, Injectable, NotFoundException }
 import { createHash, randomUUID } from 'node:crypto';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
-import { CustomerNotificationService } from './customer-notification.service';
+import { CustomerNotificationService, type AssignedTeam } from './customer-notification.service';
 import { CreateBookingDto, UpdateBookingDto } from './booking.dto';
 import { verifyTrackingToken } from './tracking-token';
 import { nextBookingNumber } from './booking-number';
@@ -38,6 +38,16 @@ function parseDownpayment(raw: unknown, existing: { amount: Prisma.Decimal | nul
   const current = existing.downpayment === null ? null : toCents(existing.downpayment);
   if ((next === null ? null : toCents(next)) === current) return undefined;
   return next;
+}
+
+/** The truck and crew Dispatch sends with ConfirmAssignment, kept only if it is plain, short text. */
+export function assignedTeam(value: unknown): AssignedTeam | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const text = (item: unknown) => (typeof item === 'string' && item.trim() ? item.trim().slice(0, 120) : undefined);
+  const helperNames = Array.isArray(raw.helperNames) ? raw.helperNames.map(text).filter((name): name is string => Boolean(name)).slice(0, 10) : [];
+  const team = { truck: text(raw.truck), driverName: text(raw.driverName), helperNames, dispatchTime: text(raw.dispatchTime) };
+  return team.truck || team.driverName || helperNames.length ? team : undefined;
 }
 
 function uuid(value: string): boolean {
@@ -333,7 +343,11 @@ export class BookingService {
     if (kind === 'SetPaymentHold' && typeof input.paymentHold !== 'boolean') {
       throw new BadRequestException('paymentHold must be boolean');
     }
-    const payloadHash = createHash('sha256').update(JSON.stringify({ id, input })).digest('hex');
+    // The team details only feed the customer email, so they stay out of the duplicate-command check:
+    // a retry is still the same command even if a crew member's name was edited in between.
+    const { team: rawTeam, ...commandInput } = input;
+    const team = kind === 'ConfirmAssignment' ? assignedTeam(rawTeam) : undefined;
+    const payloadHash = createHash('sha256').update(JSON.stringify({ id, input: commandInput })).digest('hex');
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtext(${id}))::text`;
       const previous = await tx.internalBookingCommand.findUnique({ where: { commandId } });
@@ -385,7 +399,7 @@ export class BookingService {
     });
     if ('applied' in result && result.applied && !result.duplicate && (kind === 'ConfirmAssignment' || kind === 'ConfirmWorkCompletion')) {
       const booking = await this.get(id);
-      await this.customerNotifications.sendTrackingStatusUpdate(booking, kind === 'ConfirmAssignment' ? 'Team assigned' : 'Delivered');
+      await this.customerNotifications.sendTrackingStatusUpdate(booking, kind === 'ConfirmAssignment' ? 'Team assigned' : 'Delivered', team);
     }
     return result;
   }
