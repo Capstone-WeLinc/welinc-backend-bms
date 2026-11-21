@@ -104,11 +104,8 @@ export class CollectionsService {
         const active = await tx.collection.findMany({
           where: { bookingUuid: booking.id, status: { in: ['PENDING', 'VERIFYING', 'VERIFIED'] } },
         });
-        const refunds = await tx.refund.findMany({
-          where: { collectionId: { in: active.filter((item) => item.status === 'VERIFIED').map((item) => item.id) }, projectionState: 'SYNCED' },
-        });
-        const outstandingCents = active.reduce((sum, item) => sum + cents(item.amount), 0) -
-          refunds.reduce((sum, item) => sum + cents(item.amount), 0) + downpaymentCents(booking);
+        // A refund closes that money; it is not owed again, so refunds don't reopen the balance.
+        const outstandingCents = active.reduce((sum, item) => sum + cents(item.amount), 0) + downpaymentCents(booking);
         if (booking.amount !== null && outstandingCents + cents(value) > cents(booking.amount)) {
           throw new ConflictException(outstandingCents >= cents(booking.amount)
             ? 'Booking is already fully paid'
@@ -133,10 +130,9 @@ export class CollectionsService {
   }
 
   async eligibleBookings() {
-    const [bookings, verified, refunds, completedWork, readyBookingUuids] = await Promise.all([
+    const [bookings, verified, completedWork, readyBookingUuids] = await Promise.all([
       this.bookings.list(),
       this.prisma.collection.findMany({ where: { status: 'VERIFIED' } }),
-      this.prisma.refund.findMany({ where: { projectionState: 'SYNCED' } }),
       this.prisma.workOutcome.findMany({
         where: { status: 'COMPLETED', arrivalTime: { not: null } },
         select: { bookingUuid: true, issueReported: true, issueDetails: true },
@@ -147,14 +143,11 @@ export class CollectionsService {
     const postServiceComplete = new Set(completedWork
       .filter((work) => !work.issueReported || Boolean(work.issueDetails?.trim()))
       .map((work) => work.bookingUuid));
-    const refundedByCollection = new Map<string, number>();
-    for (const refund of refunds) {
-      refundedByCollection.set(refund.collectionId, (refundedByCollection.get(refund.collectionId) ?? 0) + cents(refund.amount));
-    }
+    // Collected money counts as paid even if part of it was later refunded: a refund closes that
+    // amount, so a refunded booking does not come back to Daily Sales as "still to collect".
     const paidByBooking = new Map<string, number>();
     for (const collection of verified) {
-      const netAmount = cents(collection.amount) - (refundedByCollection.get(collection.id) ?? 0);
-      paidByBooking.set(collection.bookingUuid, (paidByBooking.get(collection.bookingUuid) ?? 0) + netAmount);
+      paidByBooking.set(collection.bookingUuid, (paidByBooking.get(collection.bookingUuid) ?? 0) + cents(collection.amount));
     }
     return bookings.filter((booking) => booking.status !== 'Cancelled' &&
       dispatchReady.has(booking.id) && postServiceComplete.has(booking.id) &&
@@ -173,9 +166,6 @@ export class CollectionsService {
       this.prisma.collection.findMany({ where: { bookingUuid: { in: ids }, status: { in: ['PENDING', 'VERIFYING', 'VERIFIED'] } } }),
       this.prisma.workOutcome.findMany({ where: { bookingUuid: { in: ids } }, select: { bookingUuid: true, finalizedAt: true, updatedAt: true, finalizedBy: true } }),
     ]);
-    const refunds = await this.prisma.refund.findMany({
-      where: { collectionId: { in: active.filter((item) => item.status === 'VERIFIED').map((item) => item.id) }, projectionState: 'SYNCED' },
-    });
     const awaitingApproval = new Set(active.filter((item) => item.status !== 'VERIFIED').map((item) => item.bookingUuid));
     const completedOn = new Map(work.map((item) => [item.bookingUuid, manilaDate(item.finalizedAt ?? item.updatedAt)]));
     // A record belongs to the CS user who verified its Post-Service; older records without one are shared.
@@ -184,10 +174,9 @@ export class CollectionsService {
       .filter((booking) => booking.amount !== null && !awaitingApproval.has(booking.id) &&
         (!actor || !verifiedBy.get(booking.id) || verifiedBy.get(booking.id) === actor))
       .map((booking) => {
+        // Refunded money stays settled; only money never collected is still to collect.
         const collected = active.filter((item) => item.bookingUuid === booking.id)
-          .reduce((sum, item) => sum + cents(item.amount), 0) -
-          refunds.filter((item) => active.some((c) => c.id === item.collectionId && c.bookingUuid === booking.id))
-            .reduce((sum, item) => sum + cents(item.amount), 0);
+          .reduce((sum, item) => sum + cents(item.amount), 0);
         return {
           bookingUuid: booking.id, bookingId: booking.bookingId, bookingNo: booking.bookingNo,
           clientName: booking.client, service: booking.service,
@@ -460,8 +449,8 @@ export class CollectionsService {
         const current = await tx.collection.findUniqueOrThrow({ where: { id } });
         if (current.status !== 'PENDING') return current;
         const reserved = await tx.collection.findMany({ where: { bookingUuid: current.bookingUuid, status: { in: ['VERIFIED', 'VERIFYING'] } } });
-        const refunded = await tx.refund.findMany({ where: { collectionId: { in: reserved.map((item) => item.id) }, projectionState: 'SYNCED' } });
-        const paidCents = reserved.reduce((sum, item) => sum + cents(item.amount), 0) - refunded.reduce((sum, item) => sum + cents(item.amount), 0);
+        // Refunds don't reopen the balance, so they aren't subtracted here either.
+        const paidCents = reserved.reduce((sum, item) => sum + cents(item.amount), 0);
         if (booking.amount !== null && paidCents + cents(current.amount) > cents(booking.amount)) {
           throw new ConflictException('Collection exceeds the current booking amount');
         }
