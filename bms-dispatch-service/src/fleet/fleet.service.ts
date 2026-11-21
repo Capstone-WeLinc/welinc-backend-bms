@@ -1,6 +1,7 @@
 import { DirectoryClient } from '../auth/directory.client';
 import { permanentCrew } from './vmms-fleet.provider';
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
+import { CrewLeaveService } from '../crew-leave/crew-leave.service';
 import { PrismaService } from '../prisma.service';
 import { BookingClient } from '../booking-client.service';
 import { FLEET_PROVIDER, type FleetProvider } from './fleet-provider';
@@ -60,7 +61,13 @@ export class FleetService {
     private readonly directory: DirectoryClient,
     private readonly bookings: BookingClient,
     @Inject(FLEET_PROVIDER) private readonly provider: FleetProvider,
+    @Optional() private readonly leave?: CrewLeaveService,
   ) {}
+
+  /** Crew on approved leave, or on an emergency, today (spec bms/0003). */
+  private async onLeaveToday(ids: string[]) {
+    return this.leave ? this.leave.onLeave(manilaToday(), ids) : new Map();
+  }
 
   garages() { return this.provider.garages(); }
 
@@ -160,8 +167,11 @@ export class FleetService {
       }),
     ]);
     const assigned = new Set(activeAssignments.map((item) => item.driverId));
+    const away = await this.onLeaveToday(rows.map((driver) => String(driver.id)));
     return rows.map((driver) => ({
-      ...driver, status: assigned.has(String(driver.id)) ? 'On Duty' : driver.status || 'Available',
+      ...driver,
+      status: away.has(String(driver.id)) ? 'On Leave' : assigned.has(String(driver.id)) ? 'On Duty' : driver.status || 'Available',
+      ...(away.has(String(driver.id)) && { leaveUntil: away.get(String(driver.id)).endDate }),
     }));
   }
 
@@ -172,16 +182,20 @@ export class FleetService {
     ]);
     const assigned = new Set(activeAssignments.flatMap((item) => item.helperIds));
     const people = await this.directory.lookup(rows.flatMap(h=>h.userId?[h.userId]:[]));
+    const away = await this.onLeaveToday(rows.map((helper) => helper.id));
     return rows.filter(h=>!h.userId || permanentCrew(people.get(h.userId),'HELPER')).map((helper) => ({
       id: helper.id, empId: helper.empId, fullName: helper.name, initials: helper.initials,
-      contact: helper.contact ?? '', email: helper.email ?? '', status: assigned.has(helper.id) ? 'On Duty' : helper.crewStatus,
+      contact: helper.contact ?? '', email: helper.email ?? '',
+      status: away.has(helper.id) ? 'On Leave' : assigned.has(helper.id) ? 'On Duty' : helper.crewStatus,
+      ...(away.has(helper.id) && { leaveUntil: away.get(helper.id).endDate }),
       totalTrips: helper.totalTrips, joinDate: helper.joinDate?.toISOString().slice(0, 10) ?? '',
       emergencyName: helper.emergencyName ?? '', emergencyContact: helper.emergencyContact ?? '',
       updatedAt: helper.updatedAt?.toISOString() ?? null,
     }));
   }
 
-  async checkAssignment(vehicleId: string, driverId: string, helperIds: string[]) {
+  /** `serviceDate` (YYYY-MM-DD) also blocks crew who are on leave that day (spec bms/0003). */
+  async checkAssignment(vehicleId: string, driverId: string, helperIds: string[], serviceDate?: string) {
     if (!uuid.test(vehicleId) || !uuid.test(driverId) || helperIds.some((id) => !uuid.test(id))) {
       throw new BadRequestException('Assignment requires persisted fleet and crew IDs');
     }
@@ -196,6 +210,9 @@ export class FleetService {
     const helpers = await this.prisma.helper.findMany({ where: { id: { in: helperIds }, isActive: true } });
     const people = await this.directory.lookup(helpers.flatMap(h=>h.userId?[h.userId]:[]));
     if (helpers.length !== helperIds.length || helpers.some(h=>h.userId && !permanentCrew(people.get(h.userId),'HELPER'))) throw new BadRequestException('Helper is unavailable');
+    // Helpers get the same manual-status check as drivers; before this, helper status was never checked.
+    if (helpers.some((h) => !['Available', 'On Duty'].includes(h.crewStatus || 'Available'))) throw new BadRequestException('Helper is unavailable');
+    if (serviceDate && this.leave) await this.leave.assertAvailable(serviceDate, driverId, helperIds);
     return { plateNumber: vehicle.plateNumber };
   }
 

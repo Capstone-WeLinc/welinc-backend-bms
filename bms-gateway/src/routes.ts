@@ -31,7 +31,7 @@ export function route(
     return { owner: "dispatch", path, public: false };
   if (/^\/(booking|approvals)(\/|$)/.test(local))
     return { owner: "booking", path: local, public: false };
-  if (/^\/(dispatch|scheduling|job-order)(\/|$)/.test(local))
+  if (/^\/(dispatch|scheduling|job-order|crew-leave)(\/|$)/.test(local))
     return { owner: "dispatch", path: local, public: false };
   if (/^\/(post-service|daily-sales|collections)(\/|$)/.test(local))
     return { owner: "completion", path: local, public: false };

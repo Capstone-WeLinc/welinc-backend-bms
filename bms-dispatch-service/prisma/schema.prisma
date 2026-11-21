@@ -164,3 +164,43 @@ model DemoSeedRecord {
  @@index([datasetKey,bookingUuid], map:"bms_demo_seed_records_dataset_idx")
  @@map("bms_demo_seed_records")
 }
+
+/// A leave or emergency filed for a driver or helper (spec bms/0003). Operations files it;
+/// Admin decides it on the Approvals page. An emergency is in effect while it waits.
+model CrewLeaveRequest {
+  id             String    @id @default(uuid()) @db.Uuid
+  crewType       String    @map("crew_type") @db.VarChar(10)
+  crewId         String    @map("crew_id") @db.Uuid
+  crewEmpId      String    @map("crew_emp_id") @db.VarChar(40)
+  crewName       String    @map("crew_name") @db.VarChar(100)
+  kind           String    @db.VarChar(12)
+  startDate      String    @map("start_date") @db.VarChar(10)
+  endDate        String    @map("end_date") @db.VarChar(10)
+  reason         String    @db.Text
+  status         String    @default("Requested") @db.VarChar(12)
+  requestedBy    String    @map("requested_by") @db.Uuid
+  requestedAt    DateTime  @default(now()) @map("requested_at") @db.Timestamptz(6)
+  decidedBy      String?   @map("decided_by") @db.Uuid
+  decidedAt      DateTime? @map("decided_at") @db.Timestamptz(6)
+  decisionReason String?   @map("decision_reason") @db.Text
+  updatedAt      DateTime  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  events         CrewLeaveEvent[]
+
+  @@index([crewId, status])
+  @@index([status])
+  @@index([requestedBy])
+  @@map("crew_leave_requests")
+}
+
+model CrewLeaveEvent {
+  id        String           @id @default(uuid()) @db.Uuid
+  requestId String           @map("request_id") @db.Uuid
+  request   CrewLeaveRequest @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  actorId   String           @map("actor_id") @db.Uuid
+  action    String           @db.VarChar(20)
+  reason    String?          @db.Text
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([requestId])
+  @@map("crew_leave_events")
+}
