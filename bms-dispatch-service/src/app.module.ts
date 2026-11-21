@@ -16,12 +16,15 @@ import { SchedulingController } from './dispatch/scheduling.controller';
 import { JobOrderController } from './dispatch/job-order.controller';
 import { AuditController, AuditProvider } from './audit';
 import { InternalDispatchController } from './dispatch/internal-dispatch.controller';
+import { CrewLeaveController } from './crew-leave/crew-leave.controller';
+import { InternalCrewLeaveController } from './crew-leave/internal-crew-leave.controller';
+import { CrewLeaveService } from './crew-leave/crew-leave.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }), BmsAuthModule],
-  controllers: [HealthController, DispatchController, SchedulingController, JobOrderController, FleetController, AuditController, InternalDispatchController],
+  controllers: [HealthController, DispatchController, SchedulingController, JobOrderController, FleetController, AuditController, InternalDispatchController, CrewLeaveController, InternalCrewLeaveController],
   providers: [PrismaService, DispatchAuthGuard, DispatchService,
     { provide: FLEET_PROVIDER, useClass: VmmsFleetProvider },
-    FleetService, BookingClient, AuditProvider],
+    FleetService, BookingClient, AuditProvider, CrewLeaveService],
 })
 export class AppModule {}
