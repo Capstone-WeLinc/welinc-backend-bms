@@ -46,7 +46,7 @@ async function main(){
      },item.id);
      await insertOwned(db,'refund_requests',{
       id:requestId,collection_id:collectionId,booking_uuid:item.id,booking_no:number,client_name:client,amount:item.amount/4,
-      reason:'[BMS DEMO v1] Demonstration partial refund',status:'Approved',requested_by:manifest.actors.cs,requested_at:timestamp,
+      reason:'[BMS DEMO v1] Demonstration partial refund',status:'Refunded',requested_by:manifest.actors.cs,requested_at:timestamp,
       decided_by:manifest.actors.admin,decided_at:timestamp,decision_reason:'BMS demo seed',refund_id:refundId,
      },item.id);
     }
