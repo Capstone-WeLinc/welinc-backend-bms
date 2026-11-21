@@ -66,4 +66,6 @@ export class UpdateBookingDto {
   @IsOptional() @IsEmail() email?: string;
   @IsOptional() @IsString() notes?: string;
   @IsOptional() @IsString() status?: string;
+  /** Amount the client already paid before the trip. Null or an empty string clears it. */
+  @IsOptional() @IsString() @Matches(/^(?:\d{1,8}(?:\.\d{1,2})?)?$/) downpayment?: string | null;
 }

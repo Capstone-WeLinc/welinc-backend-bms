@@ -9,6 +9,8 @@ const METHODS = ['Cash', 'BDO', 'GCash', 'Xendit'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const money = (value: Prisma.Decimal | string | number) => `₱${Number(value).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const cents = (value: Prisma.Decimal | string | number) => Math.round(Number(value) * 100);
+/** The client's downpayment recorded on the booking counts as already paid against its balance. */
+const downpaymentCents = (booking: { downpayment?: string | number | null }) => booking.downpayment == null ? 0 : cents(booking.downpayment);
 
 function manilaDate(value: Date) {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(value);
@@ -40,6 +42,20 @@ export type CollectionDraft = {
 @Injectable()
 export class CollectionsService {
   constructor(private readonly prisma: PrismaService, private readonly bookings: BookingClient, private readonly dispatch: DispatchClient) {}
+
+  /**
+   * Bookings whose trip is officially done: the work completion was confirmed and the required
+   * Post-Service details (arrival time, and issue details when an issue was reported) are recorded.
+   */
+  private async completedBookingUuids(bookingUuids?: string[]) {
+    const work = await this.prisma.workOutcome.findMany({
+      where: { status: 'COMPLETED', arrivalTime: { not: null }, ...(bookingUuids && { bookingUuid: { in: bookingUuids } }) },
+      select: { bookingUuid: true, arrivalTime: true, issueReported: true, issueDetails: true },
+    });
+    return new Set(work
+      .filter((item) => item.arrivalTime?.trim() && (!item.issueReported || item.issueDetails?.trim()))
+      .map((item) => item.bookingUuid));
+  }
 
   private async ensureCollectionReady(bookingUuid: string) {
     const [work, readyBookingUuids] = await Promise.all([
@@ -92,7 +108,7 @@ export class CollectionsService {
           where: { collectionId: { in: active.filter((item) => item.status === 'VERIFIED').map((item) => item.id) }, projectionState: 'SYNCED' },
         });
         const outstandingCents = active.reduce((sum, item) => sum + cents(item.amount), 0) -
-          refunds.reduce((sum, item) => sum + cents(item.amount), 0);
+          refunds.reduce((sum, item) => sum + cents(item.amount), 0) + downpaymentCents(booking);
         if (booking.amount !== null && outstandingCents + cents(value) > cents(booking.amount)) {
           throw new ConflictException(outstandingCents >= cents(booking.amount)
             ? 'Booking is already fully paid'
@@ -142,7 +158,7 @@ export class CollectionsService {
     }
     return bookings.filter((booking) => booking.status !== 'Cancelled' &&
       dispatchReady.has(booking.id) && postServiceComplete.has(booking.id) &&
-      (booking.amount === null || (paidByBooking.get(booking.id) ?? 0) < cents(booking.amount)));
+      (booking.amount === null || (paidByBooking.get(booking.id) ?? 0) + downpaymentCents(booking) < cents(booking.amount)));
   }
 
   /**
@@ -176,7 +192,7 @@ export class CollectionsService {
           bookingUuid: booking.id, bookingId: booking.bookingId, bookingNo: booking.bookingNo,
           clientName: booking.client, service: booking.service,
           completedOn: completedOn.get(booking.id) ?? booking.date,
-          amount: (cents(booking.amount!) - collected) / 100,
+          amount: (cents(booking.amount!) - downpaymentCents(booking) - collected) / 100,
           method: suggestedMethod(booking.requestedPaymentMethod), reference: booking.bookingNo,
         };
       })
@@ -229,9 +245,11 @@ export class CollectionsService {
         orderBy: { submittedAt: 'desc' },
       }),
     ]);
+    // CS only sees collections for trips that are officially done with complete Post-Service details.
+    const completed = admin ? null : await this.completedBookingUuids([...new Set(awaiting.map((item) => item.bookingUuid))]);
     return {
       ready,
-      awaiting: awaiting.map((item) => ({
+      awaiting: awaiting.filter((item) => !completed || completed.has(item.bookingUuid)).map((item) => ({
         id: item.id, bookingId: item.bookingIdAlias, bookingNo: item.bookingNo, clientName: item.clientName,
         amount: Number(item.amount), method: item.method, reference: item.reference,
         submittedOn: manilaDate(item.submittedAt),
@@ -578,8 +596,12 @@ export class CollectionsService {
     return this.prisma.refund.update({ where: { id: refund.id }, data: { projectionState: 'SYNCED', projectionError: null } });
   }
 
-  async sales(submittedOnly = false) {
-    const collections = await this.prisma.collection.findMany({ where: { status: 'VERIFIED' }, orderBy: { collectedAt: 'desc' } });
+  async sales(submittedOnly = false, completedOnly = false) {
+    let collections = await this.prisma.collection.findMany({ where: { status: 'VERIFIED' }, orderBy: { collectedAt: 'desc' } });
+    if (completedOnly) {
+      const completed = await this.completedBookingUuids([...new Set(collections.map((item) => item.bookingUuid))]);
+      collections = collections.filter((item) => completed.has(item.bookingUuid));
+    }
     const refunds = await this.prisma.refund.findMany({ where: { projectionState: 'SYNCED' }, orderBy: { refundedAt: 'desc' } });
     // Collections now reach Admin only through the CS Submit step, so every verified one is a submitted sale.
     const rows = collections.map((item) => this.saleRow(item, cents(item.amount), true));
@@ -605,8 +627,8 @@ export class CollectionsService {
     };
   }
 
-  async summary(date = manilaDate(new Date())) {
-    const rows = (await this.sales()).filter((item) => item.date === date);
+  async summary(date = manilaDate(new Date()), completedOnly = false) {
+    const rows = (await this.sales(false, completedOnly)).filter((item) => item.date === date);
     const sum = (field: 'cashPayment' | 'bdoPayment' | 'gcashPayment' | 'xenditPayment' | 'totalDailySales') =>
       money(rows.reduce((total, item) => total + Math.round(Number(item[field].replace(/[^0-9.-]/g, '')) * 100), 0) / 100);
     return { date, totalInHouse: rows.filter((item) => item.type === 'Inhouse' && !item.totalDailySales.includes('₱-')).length,
