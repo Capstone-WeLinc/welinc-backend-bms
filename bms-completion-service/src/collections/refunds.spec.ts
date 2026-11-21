@@ -285,3 +285,47 @@ describe('Refunds', () => {
     });
   });
 });
+
+describe('A refund closes the money (Daily Sales does not ask to collect it again)', () => {
+  /** Adds what Daily Sales needs: a verified Post-Service record, the booking, and dispatch readiness. */
+  function withDailySales(t: ReturnType<typeof setup>) {
+    t.prisma.workOutcome = table([{
+      bookingUuid: BOOKING, status: 'COMPLETED', arrivalTime: '08:00', issueReported: false, issueDetails: null,
+      finalizedAt: new Date(), updatedAt: new Date(), finalizedBy: CS,
+    }]);
+    const record = {
+      id: BOOKING, bookingId: 'B-001', bookingNo: 'BK-001', client: 'Juan', service: 'Lipat Bahay', date: '2026-11-20',
+      status: 'Completed', version: 1, amount: '1000.00', downpayment: null, requestedPaymentMethod: 'GCash',
+    };
+    const bookings: any = { list: async () => [record], resolve: async () => record, get: async () => record, command: async () => ({}) };
+    const dispatch: any = { postServiceReadyBookingUuids: async () => [BOOKING], snapshot: async () => ({}) };
+    return new CollectionsService(t.prisma, bookings, dispatch);
+  }
+
+  it('still lists a booking that is genuinely unpaid, with its real balance', async () => {
+    const t = setup();
+    t.addVerifiedCollection('600.00');
+    const drafts = await withDailySales(t).drafts();
+    expect(drafts.map((d) => d.amount)).toEqual([400]);
+  });
+
+  it('does not list the refunded part of a fully paid booking as "to collect"', async () => {
+    const t = setup();
+    const c = t.addVerifiedCollection('1000.00');
+    const req = await t.service.requestRefund(c.id, { amount: '250', reason: 'Damaged item' }, CS);
+    await t.service.decideApproval('refund', req.id, ADMIN, 'approve');
+    const daily = withDailySales(t);
+    expect(await daily.drafts()).toEqual([]);
+    expect(await daily.eligibleBookings()).toEqual([]);
+  });
+
+  it('refuses to record the refunded amount as a new payment', async () => {
+    const t = setup();
+    const c = t.addVerifiedCollection('1000.00');
+    const req = await t.service.requestRefund(c.id, { amount: '250', reason: 'Damaged item' }, CS);
+    await t.service.decideApproval('refund', req.id, ADMIN, 'approve');
+    await expect(withDailySales(t).create({
+      idempotencyKey: randomUUID(), bookingId: BOOKING, amount: '250', method: 'Cash', reference: 'R-2',
+    }, CS)).rejects.toThrow('already fully paid');
+  });
+});

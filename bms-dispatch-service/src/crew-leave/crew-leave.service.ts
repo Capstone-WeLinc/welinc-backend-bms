@@ -225,6 +225,15 @@ export class CrewLeaveService {
   }
 
   async approvalItems(status?: string) {
+    if (String(status ?? '').toLowerCase() === 'history') {
+      // Decided by Admin, or withdrawn by Operations, for the Approvals History tab.
+      const rows = await this.prisma.crewLeaveRequest.findMany({
+        where: { status: { in: ['Approved', 'Rejected', 'Withdrawn'] } }, orderBy: { decidedAt: 'desc' }, take: 500,
+      });
+      return { items: rows.map((row) => ({
+        ...this.queueItem(row), decidedBy: row.decidedBy, decidedAt: (row.decidedAt ?? row.requestedAt).toISOString(),
+      })) };
+    }
     const approvedOnly = String(status ?? '').toLowerCase() === 'approved';
     const rows = await this.prisma.crewLeaveRequest.findMany({
       where: { status: approvedOnly ? 'Approved' : 'Requested' },

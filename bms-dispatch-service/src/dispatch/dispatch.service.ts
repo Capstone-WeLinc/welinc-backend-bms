@@ -285,6 +285,16 @@ export class DispatchService {
     let booking = await this.bookings.get(id);
     const vehicle = await this.fleet.checkAssignment(vehicleId, driverId, helperIds as string[], String(booking.date ?? ''));
     const assignedDriverName = String((await this.fleet.drivers()).find((item) => item.id === driverId)?.fullName ?? driverId);
+    // Sent with ConfirmAssignment so the customer's "Team assigned" email can name the truck and crew.
+    // (Booking emails while this assignment is still PENDING here, so it can't look the team up itself.)
+    const [fleetVehicles, fleetHelpers] = await Promise.all([this.fleet.vehicles(), this.fleet.helpers()]);
+    const truck = fleetVehicles.find((item) => item.id === vehicleId);
+    const team = {
+      truck: truck ? `${truck.plateNumber} ${truck.alias ?? ''}`.trim() : vehicle.plateNumber,
+      driverName: assignedDriverName,
+      helperNames: (helperIds as string[]).map((helperId) => fleetHelpers.find((item) => item.id === helperId)?.fullName).filter((name): name is string => Boolean(name)),
+      dispatchTime,
+    };
     let assignment = await this.prisma.dispatchAssignment.findUnique({ where: { bookingUuid: id } });
     if (!assignment && (!['For Plotting', 'Rescheduled'].includes(booking.status) || booking.operationalHold || booking.paymentHold)) {
       throw new ConflictException('Booking is no longer ready for assignment');
@@ -342,7 +352,7 @@ export class DispatchService {
       try {
         await this.bookings.command(id, {
           commandId: assignment.confirmCommandId, kind: 'ConfirmAssignment',
-          expectedVersion: assignment.bookingVersion, reference: assignment.id, actor,
+          expectedVersion: assignment.bookingVersion, reference: assignment.id, actor, team,
         });
       } catch (error) {
         if (!(error instanceof ConflictException)) throw error;
@@ -353,7 +363,7 @@ export class DispatchService {
         } });
         await this.bookings.command(id, {
           commandId: assignment.confirmCommandId, kind: 'ConfirmAssignment',
-          expectedVersion: assignment.bookingVersion, reference: assignment.id, actor,
+          expectedVersion: assignment.bookingVersion, reference: assignment.id, actor, team,
         });
       }
     } catch (error) {
