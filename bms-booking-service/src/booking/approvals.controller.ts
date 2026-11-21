@@ -21,28 +21,28 @@ export class ApprovalsController {
   mine(@Req() request: ActorRequest) { return this.approvals.mine(actor(request)); }
 
   @Get(':type/:id') @BmsRoles('ADMIN', 'CUSTOMER_SUPPORT')
-  detail(@Param('type') type: 'booking' | 'collection' | 'refund', @Param('id') id: string, @Req() request: ActorRequest) {
+  detail(@Param('type') type: 'booking' | 'collection' | 'refund' | 'crew', @Param('id') id: string, @Req() request: ActorRequest) {
     const admin = request.bmsIdentity?.role === 'ADMIN';
     return this.approvals.detail(type, id, actor(request), admin);
   }
 
   @Post(':type/:id/approve') @BmsRoles('ADMIN')
-  approve(@Param('type') type: 'booking' | 'collection' | 'refund', @Param('id') id: string, @Req() request: ActorRequest) {
+  approve(@Param('type') type: 'booking' | 'collection' | 'refund' | 'crew', @Param('id') id: string, @Req() request: ActorRequest) {
     return this.approvals.decide(type, id, actor(request), 'approve');
   }
 
   @Post(':type/:id/reject') @BmsRoles('ADMIN')
-  reject(@Param('type') type: 'booking' | 'collection' | 'refund', @Param('id') id: string, @Body() body: Record<string, unknown>, @Req() request: ActorRequest) {
+  reject(@Param('type') type: 'booking' | 'collection' | 'refund' | 'crew', @Param('id') id: string, @Body() body: Record<string, unknown>, @Req() request: ActorRequest) {
     return this.approvals.decide(type, id, actor(request), 'reject', String(body.reason ?? ''));
   }
 
   @Post(':type/:id/withdraw') @BmsRoles('CUSTOMER_SUPPORT')
-  withdraw(@Param('type') type: 'booking' | 'collection' | 'refund', @Param('id') id: string, @Req() request: ActorRequest) {
+  withdraw(@Param('type') type: 'booking' | 'collection' | 'refund' | 'crew', @Param('id') id: string, @Req() request: ActorRequest) {
     return this.approvals.withdraw(type, id, actor(request));
   }
 
   @Post(':type/:id/resubmit') @BmsRoles('CUSTOMER_SUPPORT')
-  resubmit(@Param('type') type: 'booking' | 'collection' | 'refund', @Param('id') id: string, @Body() body: Record<string, unknown>, @Req() request: ActorRequest) {
+  resubmit(@Param('type') type: 'booking' | 'collection' | 'refund' | 'crew', @Param('id') id: string, @Body() body: Record<string, unknown>, @Req() request: ActorRequest) {
     return this.approvals.resubmit(type, id, actor(request), body);
   }
 }

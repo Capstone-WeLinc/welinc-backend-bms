@@ -257,7 +257,7 @@ export class DispatchService {
     }
     const activeGarage = (await this.fleet.garages()).some((item) => item.name === garage);
     if (!activeGarage) throw new BadRequestException('Garage is unavailable');
-    await this.fleet.checkAssignment(vehicleId, driverId, helperIds as string[]);
+    await this.fleet.checkAssignment(vehicleId, driverId, helperIds as string[], String(booking.date ?? ''));
     if ((await this.bookings.pendingChange(id)).pending) throw new ConflictException('This booking has a pending reschedule or cancellation request');
     const conflict = await this.prisma.dispatchAssignment.findFirst({ where: {
       bookingUuid: { not: id }, serviceDate: booking.date, dispatchTime,
@@ -283,7 +283,7 @@ export class DispatchService {
     const driverId = String(input.driverId ?? '');
     const helperIds = input.helperIds;
     let booking = await this.bookings.get(id);
-    const vehicle = await this.fleet.checkAssignment(vehicleId, driverId, helperIds as string[]);
+    const vehicle = await this.fleet.checkAssignment(vehicleId, driverId, helperIds as string[], String(booking.date ?? ''));
     const assignedDriverName = String((await this.fleet.drivers()).find((item) => item.id === driverId)?.fullName ?? driverId);
     let assignment = await this.prisma.dispatchAssignment.findUnique({ where: { bookingUuid: id } });
     if (!assignment && (!['For Plotting', 'Rescheduled'].includes(booking.status) || booking.operationalHold || booking.paymentHold)) {

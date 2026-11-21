@@ -17,6 +17,12 @@ describe("BMS route ownership", () => {
       public: false,
     });
   });
+  it("sends crew leave to dispatch without exposing its internal routes", () => {
+    expect(route("/bms/crew-leave")).toEqual({ owner: "dispatch", path: "/crew-leave", public: false });
+    expect(route("/bms/crew-leave/abc/withdraw")).toEqual({ owner: "dispatch", path: "/crew-leave/abc/withdraw", public: false });
+    expect(route("/bms/crew-leave-x")).toBeNull();
+    expect(route("/bms/internal/dispatch/crew-leave")).toBeNull();
+  });
   it("does not expose auth or internal service routes", () => {
     expect(route("/auth/login")).toBeNull();
     expect(route("/bms/auth/login")).toBeNull();
