@@ -6,6 +6,11 @@ const DECISIONS: Record<string, string> = { approve: 'Approved', reject: 'Reject
 function approvalItem(type: string, ctx: AuditContext) {
   if (type === 'collection') return 'collection';
   if (type === 'refund') return 'refund request';
+  if (type === 'crew') {
+    const kind = asText(ctx.result.kind) === 'EMERGENCY' ? 'crew emergency' : 'crew leave request';
+    const name = asText(ctx.result.crewName);
+    return name ? `${kind} for ${name}` : kind;
+  }
   const change = asText(ctx.result.type) ?? asText(ctx.result.subtype);
   return change === 'cancel' ? 'cancellation request' : change === 'reschedule' ? 'reschedule request' : 'reschedule/cancellation request';
 }
@@ -35,7 +40,7 @@ export const AUDIT_RULES: AuditRule[] = [
       withRef(ctx.body.type === 'cancel' ? 'Requested booking cancellation' : 'Requested booking reschedule', bookingRef(ctx)),
   },
   {
-    method: 'POST', pattern: new RegExp(`^/approvals/(booking|collection|refund)/${ID}/(approve|reject|withdraw|resubmit)$`), label: (ctx) => {
+    method: 'POST', pattern: new RegExp(`^/approvals/(booking|collection|refund|crew)/${ID}/(approve|reject|withdraw|resubmit)$`), label: (ctx) => {
       const [type, , decision] = ctx.params;
       return withRef(`${DECISIONS[decision]} ${approvalItem(type, ctx)}`, bookingRef(ctx));
     },

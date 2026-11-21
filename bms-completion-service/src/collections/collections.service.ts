@@ -291,7 +291,7 @@ export class CollectionsService {
       this.prisma.refundRequest.findMany({ where: { requestedBy: actor }, orderBy: { requestedAt: 'desc' } }),
     ]);
     return { items: [
-      ...collections.map((item) => ({ id: item.id, type: 'collection', subtype: null, bookingNo: item.bookingNo, client: item.clientName, summary: `${item.method} collection`, amount: Number(item.amount), submittedAt: item.submittedAt.toISOString(), submittedBy: item.recordedBy, status: item.status === 'PENDING' || item.status === 'VERIFYING' ? 'Pending' : item.status === 'VERIFIED' ? 'Verified' : item.status === 'WITHDRAWN' ? 'Withdrawn' : 'Rejected', decisionReason: item.decisionReason })),
+      ...collections.map((item) => ({ id: item.id, type: 'collection', subtype: null, method: item.method, bookingNo: item.bookingNo, client: item.clientName, summary: `${item.method} collection`, amount: Number(item.amount), submittedAt: item.submittedAt.toISOString(), submittedBy: item.recordedBy, status: item.status === 'PENDING' || item.status === 'VERIFYING' ? 'Pending' : item.status === 'VERIFIED' ? 'Verified' : item.status === 'WITHDRAWN' ? 'Withdrawn' : 'Rejected', decisionReason: item.decisionReason })),
       ...refunds.map((item) => ({ id: item.id, type: 'refund', subtype: null, bookingNo: item.bookingNo, client: item.clientName, summary: `Refund requested: ${item.reason}`, amount: Number(item.amount), submittedAt: item.requestedAt.toISOString(), submittedBy: item.requestedBy, status: item.status === 'Requested' ? 'Pending' : item.status, decisionReason: item.decisionReason })),
     ] };
   }
