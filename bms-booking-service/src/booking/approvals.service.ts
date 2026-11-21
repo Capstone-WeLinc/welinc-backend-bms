@@ -14,6 +14,8 @@ type QueueItem = {
   id: string; type: ApprovalType; subtype: string | null; bookingId?: string;
   bookingNo: string; client: string; summary: string; amount: number | null;
   submittedAt: string; submittedBy: string; status: string; decisionReason?: string | null;
+  /** History only: who decided (or withdrew) it, and when. */
+  decidedBy?: string | null; decidedAt?: string;
 };
 
 // Only these booking changes still need Admin approval. Older create, edit, and
@@ -146,9 +148,9 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
   }
 
   /** Crew items for the queue. If dispatch is down the other approvals still load. */
-  private async crewItems(approved: boolean): Promise<QueueItem[]> {
+  private async crewItems(mode: 'pending' | 'approved' | 'history'): Promise<QueueItem[]> {
     try {
-      const items = jsonObject(await this.crewLeave(approved ? '?status=approved' : '')).items;
+      const items = jsonObject(await this.crewLeave(mode === 'pending' ? '' : `?status=${mode}`)).items;
       return Array.isArray(items) ? items as QueueItem[] : [];
     } catch {
       return [];
@@ -243,7 +245,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
 
   private async allPending(): Promise<QueueItem[]> {
     const [bookings, completion, crew] = await Promise.all([
-      this.bookingQueueRows(), this.completion('/internal/completion/approvals'), this.crewItems(false),
+      this.bookingQueueRows(), this.completion('/internal/completion/approvals'), this.crewItems('pending'),
     ]);
     const externalItems = jsonObject(completion).items;
     const combined = [...bookings, ...(Array.isArray(externalItems) ? externalItems as QueueItem[] : []), ...crew];
@@ -257,7 +259,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
         where: { status: 'Approved', type: { in: APPROVAL_CHANGE_TYPES } }, include: { booking: true }, orderBy: { decidedAt: 'desc' },
       }),
       this.completion('/internal/completion/approvals?status=approved'),
-      this.crewItems(true),
+      this.crewItems('approved'),
     ]);
     const bookings = requests.flatMap((request) => {
       const booking = request.booking;
@@ -276,19 +278,60 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
     return combined.sort((a, b) => new Date(b.submittedAt).getTime() - new Date(a.submittedAt).getTime());
   }
 
+  /** Everything already decided by Admin (or withdrawn by its submitter), newest decision first. */
+  private async allHistory(): Promise<QueueItem[]> {
+    const [requests, completion, crew] = await Promise.all([
+      this.prisma.bookingChangeRequest.findMany({
+        where: { status: { in: ['Approved', 'Rejected', 'Withdrawn'] }, type: { in: APPROVAL_CHANGE_TYPES } },
+        include: { booking: true }, orderBy: { decidedAt: 'desc' }, take: 500,
+      }),
+      this.completion('/internal/completion/approvals?status=history'),
+      this.crewItems('history'),
+    ]);
+    const bookings: QueueItem[] = requests.map((request) => {
+      const after = jsonObject(request.payloadAfter);
+      return {
+        id: request.id, type: 'booking', subtype: request.type, bookingId: request.bookingUuid,
+        bookingNo: request.booking.bookingNo, client: request.booking.client,
+        summary: request.type === 'reschedule' ? `Reschedule to ${String(after.date ?? '')}` : `Cancellation: ${request.reason ?? ''}`,
+        amount: asNumber(after.amount ?? request.booking.amount), submittedAt: request.requestedAt.toISOString(),
+        submittedBy: request.requestedBy, status: request.status, decisionReason: request.decisionReason,
+        decidedBy: request.decidedBy, decidedAt: (request.decidedAt ?? request.requestedAt).toISOString(),
+      };
+    });
+    const externalItems = jsonObject(completion).items;
+    const combined = [...bookings, ...(Array.isArray(externalItems) ? externalItems as QueueItem[] : []), ...crew];
+    return combined.sort((a, b) => new Date(b.decidedAt ?? b.submittedAt).getTime() - new Date(a.decidedAt ?? a.submittedAt).getTime());
+  }
+
   async list(query: Record<string, unknown>) {
-    const approvedOnly = String(query.status ?? '').toLowerCase() === 'approved';
-    const all = approvedOnly ? await this.allApproved() : await this.allPending();
+    const mode = String(query.status ?? '').toLowerCase();
+    const all = mode === 'history' ? await this.allHistory() : mode === 'approved' ? await this.allApproved() : await this.allPending();
     const type = String(query.type ?? 'all');
     const subtype = String(query.subtype ?? '');
     const search = String(query.search ?? '').trim().toLowerCase();
+    // History: Verified (collections) and Refunded (refunds) are approvals too.
+    const decision = String(query.decision ?? '').toLowerCase();
+    const decisionOf = (status: string) => ['approved', 'verified', 'refunded'].includes(status.toLowerCase()) ? 'approved' : status.toLowerCase();
+    const from = isCalendarDate(query.from) ? query.from : '';
+    const to = isCalendarDate(query.to) ? query.to : '';
+    const manilaDay = (value: string) => new Date(value).toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
+    const overdueOnly = String(query.overdue ?? '') === 'true';
     const filtered = all.filter((item) => (type === 'all' || item.type === type)
       && (!subtype || item.subtype === subtype)
-      && (!search || `${item.bookingNo} ${item.client} ${item.summary}`.toLowerCase().includes(search)));
+      && (!search || `${item.bookingNo} ${item.client} ${item.summary}`.toLowerCase().includes(search))
+      && (!decision || decisionOf(item.status) === decision)
+      && (!from || manilaDay(item.decidedAt ?? item.submittedAt) >= from)
+      && (!to || manilaDay(item.decidedAt ?? item.submittedAt) <= to)
+      && (!overdueOnly || Date.now() - new Date(item.submittedAt).getTime() > 24 * 60 * 60 * 1000));
     const page = Math.max(1, Math.floor(Number(query.page) || 1));
     const limit = Math.min(100, Math.max(1, Math.floor(Number(query.limit) || 10)));
-    const pageItems = filtered.slice((page - 1) * limit, page * limit);
-    return { items: await this.withSubmitterNames(pageItems), total: filtered.length, page, limit };
+    const named = await this.withSubmitterNames(filtered.slice((page - 1) * limit, page * limit));
+    const deciders = await this.userDetails(named.flatMap((item) => (item.decidedBy ? [item.decidedBy] : [])));
+    const items = named.map((item) => (item.decidedBy !== undefined
+      ? { ...item, decidedByName: item.decidedBy ? deciders.get(item.decidedBy)?.name ?? 'Unknown user' : 'Unknown user' }
+      : item));
+    return { items, total: filtered.length, page, limit };
   }
 
   async counts() {

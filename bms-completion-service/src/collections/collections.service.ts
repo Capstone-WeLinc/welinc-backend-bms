@@ -274,7 +274,41 @@ export class CollectionsService {
     });
   }
 
+  /** Everything Admin decided (or the submitter withdrew), with who and when, for the Approvals History tab. */
+  private async approvalHistory() {
+    const [collections, refunds] = await Promise.all([
+      this.prisma.collection.findMany({ where: { status: { in: ['VERIFIED', 'REJECTED', 'WITHDRAWN'] } }, orderBy: { submittedAt: 'desc' }, take: 500 }),
+      this.prisma.refundRequest.findMany({ where: { status: { in: ['Approved', 'Refunded', 'Rejected', 'Withdrawn'] } }, orderBy: { decidedAt: 'desc' }, take: 500 }),
+    ]);
+    // A withdrawn collection keeps no "withdrawn by/at", so read it from its history.
+    const withdrawnIds = collections.filter((item) => item.status === 'WITHDRAWN').map((item) => item.id);
+    const withdrawals = withdrawnIds.length
+      ? await this.prisma.approvalAuditEvent.findMany({ where: { itemType: 'collection', action: 'withdrawn', itemId: { in: withdrawnIds } } })
+      : [];
+    const withdrawnBy = new Map(withdrawals.map((event) => [event.itemId, event]));
+    return { items: [
+      ...collections.map((item) => {
+        const withdrawn = withdrawnBy.get(item.id);
+        const decidedBy = item.status === 'VERIFIED' ? item.verifiedBy : item.status === 'REJECTED' ? item.rejectedBy : withdrawn?.actorId ?? item.recordedBy;
+        const decidedAt = item.status === 'VERIFIED' ? item.verifiedAt : item.status === 'REJECTED' ? item.rejectedAt : withdrawn?.createdAt;
+        return {
+          id: item.id, type: 'collection', subtype: null, bookingNo: item.bookingNo, client: item.clientName,
+          summary: `${item.method} collection`, amount: Number(item.amount), submittedAt: item.submittedAt.toISOString(),
+          submittedBy: item.recordedBy, status: item.status === 'VERIFIED' ? 'Verified' : item.status === 'REJECTED' ? 'Rejected' : 'Withdrawn',
+          decisionReason: item.decisionReason, decidedBy: decidedBy ?? null, decidedAt: (decidedAt ?? item.submittedAt).toISOString(),
+        };
+      }),
+      ...refunds.map((item) => ({
+        id: item.id, type: 'refund', subtype: null, bookingNo: item.bookingNo, client: item.clientName,
+        summary: `Refund: ${item.reason}`, amount: Number(item.amount), submittedAt: item.requestedAt.toISOString(),
+        submittedBy: item.requestedBy, status: item.status, decisionReason: item.decisionReason,
+        decidedBy: item.decidedBy, decidedAt: (item.decidedAt ?? item.requestedAt).toISOString(),
+      })),
+    ] };
+  }
+
   async approvalItems(status?: string) {
+    if (status?.toLowerCase() === 'history') return this.approvalHistory();
     const approvedOnly = status?.toLowerCase() === 'approved';
     const [collections, refunds] = await Promise.all([
       this.prisma.collection.findMany({
