@@ -166,6 +166,8 @@ export class CustomerNotificationService {
       await this.transporter.sendMail({
         from: this.from,
         to: booking.email,
+        // The sender is a no-reply address, so a customer's Reply goes to support instead of bouncing
+        ...(this.supportEmail ? { replyTo: this.supportEmail } : {}),
         subject: content.subject,
         text: this.renderText(booking, content),
         html: this.renderHtml(booking, content),
