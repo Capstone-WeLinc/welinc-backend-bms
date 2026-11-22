@@ -4,10 +4,11 @@ import { BookingClient } from '../booking-client.service';
 import { DirectoryClient } from '../auth/directory.client';
 
 /**
- * Crew leave and emergency requests (spec bms/0003).
+ * Crew leave and emergency requests (specs bms/0003, bms/0005).
  *
- * Operations files a request for a driver or helper. A planned LEAVE takes effect once Admin
- * approves it; an EMERGENCY takes effect as soon as it is filed and Admin confirms it afterwards.
+ * A driver or helper files a request for themselves (from the bms-mobile app). A planned LEAVE
+ * takes effect once Admin approves it; an EMERGENCY takes effect as soon as it is filed and Admin
+ * confirms it afterwards.
  * "On leave" is always worked out from these requests, never written over the crew member's
  * manual status, so it ends by itself when the dates pass or the request is rejected/withdrawn.
  */
@@ -54,10 +55,22 @@ export class CrewLeaveService {
     @Optional() private readonly directory?: DirectoryClient,
   ) {}
 
-  /** The filer's own view of one request, with a named history, for the Operations For Approvals page. */
-  async mineDetail(id: string, actor: string) {
+  /** The crew record linked to this login: an active driver first, then an active helper. */
+  private async selfCrew(actor: string): Promise<{ type: CrewType; id: string; empId: string; name: string }> {
+    if (UUID.test(actor)) {
+      const driver = await this.prisma.driver.findFirst({ where: { userId: actor, isActive: true, deletedAt: null } });
+      if (driver) return { type: 'DRIVER', id: driver.id, empId: driver.empId, name: driver.name };
+      const helper = await this.prisma.helper.findFirst({ where: { userId: actor, isActive: true } });
+      if (helper) return { type: 'HELPER', id: helper.id, empId: helper.empId, name: helper.name };
+    }
+    throw new ForbiddenException('Your login is not linked to an active driver or helper');
+  }
+
+  /** One of the signed-in crew member's own requests, with a named history. */
+  async selfDetail(id: string, actor: string) {
+    const crew = await this.selfCrew(actor);
     const detail = await this.approvalDetail(id);
-    if (detail.requestedBy !== actor) throw new ForbiddenException('You can only view requests you filed');
+    if (detail.crewId !== crew.id) throw new ForbiddenException('You can only view your own requests');
     const ids = [detail.requestedBy, detail.decidedBy ?? '', ...detail.audit.map((event) => event.actorId)].filter(Boolean);
     const people = this.directory ? await this.directory.lookup(ids).catch(() => new Map()) : new Map();
     const name = (personId?: string | null) => (personId ? people.get(personId)?.name : undefined) ?? 'Unknown user';
@@ -69,21 +82,8 @@ export class CrewLeaveService {
     };
   }
 
-  private async crewMember(type: CrewType, id: string) {
-    if (type === 'DRIVER') {
-      const driver = await this.prisma.driver.findFirst({ where: { id, isActive: true, deletedAt: null } });
-      return driver ? { id: driver.id, empId: driver.empId, name: driver.name } : null;
-    }
-    const helper = await this.prisma.helper.findFirst({ where: { id, isActive: true } });
-    return helper ? { id: helper.id, empId: helper.empId, name: helper.name } : null;
-  }
-
-  /** Operations files a leave or an emergency on a crew member's behalf. */
-  async file(input: Record<string, unknown>, actor: string) {
-    const crewType = String(input.crewType ?? '').toUpperCase();
-    if (crewType !== 'DRIVER' && crewType !== 'HELPER') throw new BadRequestException('Choose a driver or helper');
-    const crewId = String(input.crewId ?? '');
-    if (!UUID.test(crewId)) throw new BadRequestException('Choose a driver or helper');
+  /** A driver or helper files a leave or an emergency for themselves. */
+  async fileSelf(input: Record<string, unknown>, actor: string) {
     const kind = String(input.kind ?? '').toUpperCase();
     if (kind !== 'LEAVE' && kind !== 'EMERGENCY') throw new BadRequestException('Choose Leave or Emergency');
     const reason = String(input.reason ?? '').trim();
@@ -101,8 +101,9 @@ export class CrewLeaveService {
       throw new BadRequestException(`A request can cover at most ${MAX_LEAVE_DAYS} days; file another request for the rest`);
     }
 
-    const person = await this.crewMember(crewType, crewId);
-    if (!person) throw new NotFoundException(`${crewLabel(crewType)} not found or no longer active`);
+    const person = await this.selfCrew(actor);
+    const crewType = person.type;
+    const crewId = person.id;
 
     return this.prisma.$transaction(async (tx) => {
       // One filer at a time per person, so two overlapping requests can't both pass the check.
@@ -111,7 +112,7 @@ export class CrewLeaveService {
         crewId, status: { in: ['Requested', 'Approved'] }, startDate: { lte: endDate }, endDate: { gte: startDate },
       } });
       if (overlap) {
-        throw new ConflictException(`${person.name} already has a ${kindLabel(overlap.kind).toLowerCase()} request for ${dateRange(overlap)}`);
+        throw new ConflictException(`You already have a ${kindLabel(overlap.kind).toLowerCase()} request for ${dateRange(overlap)}`);
       }
       const created = await tx.crewLeaveRequest.create({ data: {
         crewType, crewId, crewEmpId: person.empId, crewName: person.name, kind,
@@ -122,18 +123,20 @@ export class CrewLeaveService {
     });
   }
 
-  /** Requests the signed-in Operations user filed, newest first. */
-  mine(actor: string) {
-    return this.prisma.crewLeaveRequest.findMany({ where: { requestedBy: actor }, orderBy: { requestedAt: 'desc' }, take: 200 });
+  /** The signed-in crew member's own requests, newest first. */
+  async selfList(actor: string) {
+    const crew = await this.selfCrew(actor);
+    return this.prisma.crewLeaveRequest.findMany({ where: { crewId: crew.id }, orderBy: { requestedAt: 'desc' }, take: 200 });
   }
 
-  /** The filer can withdraw a request while it waits. Withdrawing an emergency ends it at once. */
-  async withdraw(id: string, actor: string) {
+  /** A crew member can withdraw their own request while it waits. Withdrawing an emergency ends it at once. */
+  async withdrawSelf(id: string, actor: string) {
     if (!UUID.test(id)) throw new BadRequestException('Invalid request ID');
+    const crew = await this.selfCrew(actor);
     return this.prisma.$transaction(async (tx) => {
       const current = await tx.crewLeaveRequest.findUnique({ where: { id } });
       if (!current) throw new NotFoundException('Request not found');
-      if (current.requestedBy !== actor) throw new ForbiddenException('You can only withdraw requests you filed');
+      if (current.crewId !== crew.id) throw new ForbiddenException('You can only withdraw your own requests');
       const changed = await tx.crewLeaveRequest.updateMany({ where: { id, status: 'Requested' }, data: {
         status: 'Withdrawn', decidedBy: actor, decidedAt: new Date(),
       } });
@@ -226,7 +229,7 @@ export class CrewLeaveService {
 
   async approvalItems(status?: string) {
     if (String(status ?? '').toLowerCase() === 'history') {
-      // Decided by Admin, or withdrawn by Operations, for the Approvals History tab.
+      // Decided by Admin, or withdrawn by the crew member, for the Approvals History tab.
       const rows = await this.prisma.crewLeaveRequest.findMany({
         where: { status: { in: ['Approved', 'Rejected', 'Withdrawn'] } }, orderBy: { decidedAt: 'desc' }, take: 500,
       });

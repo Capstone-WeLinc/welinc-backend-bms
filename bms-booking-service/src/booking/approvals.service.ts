@@ -468,7 +468,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
   }
 
   async withdraw(type: ApprovalType, id: string, actor: string) {
-    if (type === 'crew') throw new BadRequestException('Crew leave is withdrawn by Operations from the Crew Leave page');
+    if (type === 'crew') throw new BadRequestException('Crew leave is withdrawn by the driver or helper who filed it');
     if (type !== 'booking') return this.completion(`/internal/completion/approvals/${type}/${encodeURIComponent(id)}/withdraw`, {
       method: 'POST', body: JSON.stringify({ actor }),
     });

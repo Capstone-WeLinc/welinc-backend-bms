@@ -3,7 +3,8 @@ import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 import { AccountCheck } from './auth/account-check';
 import { TOKEN_VERIFIER, TokenVerifier, checkPerson } from './auth/verify';
-export type BmsRole = 'ADMIN' | 'CUSTOMER_SUPPORT' | 'OPERATIONS';
+// DRIVER and HELPER sign in through the bms-mobile client (spec bms/0005).
+export type BmsRole = 'ADMIN' | 'CUSTOMER_SUPPORT' | 'OPERATIONS' | 'DRIVER' | 'HELPER';
 const ROLES = 'bmsRoles';
 export const BmsRoles = (...roles: BmsRole[]) => SetMetadata(ROLES,roles);
 @Injectable()

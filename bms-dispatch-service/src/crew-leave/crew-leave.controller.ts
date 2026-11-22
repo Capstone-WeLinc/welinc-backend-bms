@@ -6,28 +6,30 @@ import { CrewLeaveService } from './crew-leave.service';
 type ActorRequest = Request & { bmsIdentity?: { sub?: string } };
 const actor = (request: ActorRequest) => request.bmsIdentity?.sub ?? '';
 
-/** Operations files and tracks crew leave; Admin decides it through the Approvals page. */
+/**
+ * Drivers and helpers file and track their own leave (spec bms/0005); Admin decides it through
+ * the Approvals page. Admin and Operations only read who is on leave, for Scheduling.
+ */
 @Controller('crew-leave')
 @UseGuards(DispatchAuthGuard)
 export class CrewLeaveController {
   constructor(private readonly leave: CrewLeaveService) {}
 
-  @Post() @BmsRoles('OPERATIONS')
-  file(@Body() body: Record<string, unknown>, @Req() request: ActorRequest) { return this.leave.file(body ?? {}, actor(request)); }
+  @Post('self') @BmsRoles('DRIVER', 'HELPER')
+  file(@Body() body: Record<string, unknown>, @Req() request: ActorRequest) { return this.leave.fileSelf(body ?? {}, actor(request)); }
 
-  @Get('mine') @BmsRoles('OPERATIONS')
-  mine(@Req() request: ActorRequest) { return this.leave.mine(actor(request)); }
+  @Get('self') @BmsRoles('DRIVER', 'HELPER')
+  mine(@Req() request: ActorRequest) { return this.leave.selfList(actor(request)); }
 
-  @Post(':id/withdraw') @BmsRoles('OPERATIONS')
-  withdraw(@Param('id') id: string, @Req() request: ActorRequest) { return this.leave.withdraw(id, actor(request)); }
+  @Get('self/:id') @BmsRoles('DRIVER', 'HELPER')
+  detail(@Param('id') id: string, @Req() request: ActorRequest) { return this.leave.selfDetail(id, actor(request)); }
+
+  @Post('self/:id/withdraw') @BmsRoles('DRIVER', 'HELPER')
+  withdraw(@Param('id') id: string, @Req() request: ActorRequest) { return this.leave.withdrawSelf(id, actor(request)); }
 
   @Get('active') @BmsRoles('ADMIN', 'OPERATIONS')
   active(@Query('from') from?: string) { return this.leave.active(from || undefined); }
 
   @Get('conflicts') @BmsRoles('ADMIN', 'OPERATIONS')
   conflicts() { return this.leave.conflicts(); }
-
-  // Declared last so it never shadows 'mine', 'active' or 'conflicts'.
-  @Get(':id') @BmsRoles('OPERATIONS')
-  detail(@Param('id') id: string, @Req() request: ActorRequest) { return this.leave.mineDetail(id, actor(request)); }
 }
