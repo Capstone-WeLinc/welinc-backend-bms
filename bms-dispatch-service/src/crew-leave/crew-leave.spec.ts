@@ -43,15 +43,17 @@ function table(rows: Row[], defaults: () => Row = () => ({})) {
 let db: any;
 const DRIVER = randomUUID();
 const HELPER = randomUUID();
-const OPS = randomUUID();
+// The logins linked to those crew records (drivers.user_id / helpers.user_id).
+const DRIVER_USER = randomUUID();
+const HELPER_USER = randomUUID();
 const ADMIN = randomUUID();
 const today = manilaToday();
 const plus = (days: number) => new Date(Date.parse(`${today}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
 
 function setup() {
   db = {
-    driver: table([{ id: DRIVER, empId: 'DRV-001', name: 'Ramon Cruz', isActive: true, deletedAt: null }]),
-    helper: table([{ id: HELPER, empId: 'HLP-001', name: 'Mark Anthony', isActive: true }]),
+    driver: table([{ id: DRIVER, userId: DRIVER_USER, empId: 'DRV-001', name: 'Ramon Cruz', isActive: true, deletedAt: null }]),
+    helper: table([{ id: HELPER, userId: HELPER_USER, empId: 'HLP-001', name: 'Mark Anthony', isActive: true }]),
     crewLeaveRequest: table([], () => ({ status: 'Requested', requestedAt: new Date(), decidedBy: null, decidedAt: null, decisionReason: null })),
     crewLeaveEvent: table([], () => ({ createdAt: new Date() })),
     dispatchAssignment: table([]),
@@ -62,29 +64,45 @@ function setup() {
   return new CrewLeaveService(db, bookings);
 }
 
-const leave = (extra: Row = {}) => ({ crewType: 'DRIVER', crewId: DRIVER, kind: 'LEAVE', startDate: plus(1), endDate: plus(2), reason: 'Family event', ...extra });
+const leave = (extra: Row = {}) => ({ kind: 'LEAVE', startDate: plus(1), endDate: plus(2), reason: 'Family event', ...extra });
+const emergency = (reason = 'Sick') => ({ kind: 'EMERGENCY', reason });
 
 describe('Crew leave', () => {
-  describe('Filing (Operations)', () => {
-    it('files a planned leave that waits for Admin and is not yet in effect', async () => {
+  describe('Filing (the crew member, for themselves)', () => {
+    it('a driver files a planned leave for their own record that waits for Admin', async () => {
       const s = setup();
-      const r = await s.file(leave(), OPS);
-      expect(r).toEqual(expect.objectContaining({ status: 'Requested', kind: 'LEAVE', crewName: 'Ramon Cruz', crewEmpId: 'DRV-001' }));
-      expect(db.crewLeaveEvent.rows).toEqual([expect.objectContaining({ action: 'filed', actorId: OPS })]);
+      const r = await s.fileSelf(leave(), DRIVER_USER);
+      expect(r).toEqual(expect.objectContaining({
+        status: 'Requested', kind: 'LEAVE', crewType: 'DRIVER', crewId: DRIVER, crewName: 'Ramon Cruz', crewEmpId: 'DRV-001', requestedBy: DRIVER_USER,
+      }));
+      expect(db.crewLeaveEvent.rows).toEqual([expect.objectContaining({ action: 'filed', actorId: DRIVER_USER })]);
       expect((await s.onLeave(plus(1))).has(DRIVER)).toBe(false);
     });
 
-    it('an emergency starts today and is in effect immediately', async () => {
+    it('a helper files an emergency that starts today and is in effect immediately', async () => {
       const s = setup();
-      const r = await s.file({ crewType: 'HELPER', crewId: HELPER, kind: 'EMERGENCY', reason: 'Hospital' }, OPS);
-      expect(r.startDate).toBe(today);
-      expect(r.endDate).toBe(today);
+      const r = await s.fileSelf(emergency('Hospital'), HELPER_USER);
+      expect(r).toEqual(expect.objectContaining({ crewType: 'HELPER', crewId: HELPER, startDate: today, endDate: today }));
       expect((await s.onLeave(today)).has(HELPER)).toBe(true);
+    });
+
+    it('ignores any crew named in the body and always files for the signed-in person', async () => {
+      const s = setup();
+      const r = await s.fileSelf(leave({ crewType: 'HELPER', crewId: HELPER }), DRIVER_USER);
+      expect(r.crewId).toBe(DRIVER);
+    });
+
+    it('refuses a login that is not linked to an active driver or helper', async () => {
+      const s = setup();
+      await expect(s.fileSelf(leave(), randomUUID())).rejects.toThrow(ForbiddenException);
+      await expect(s.fileSelf(leave(), 'not-a-uuid')).rejects.toThrow(ForbiddenException);
+      db.driver.rows[0].isActive = false;
+      await expect(s.fileSelf(leave(), DRIVER_USER)).rejects.toThrow('not linked');
     });
 
     it('refuses an emergency dated in the future', async () => {
       const s = setup();
-      await expect(s.file(leave({ kind: 'EMERGENCY', startDate: plus(1) }), OPS)).rejects.toThrow('starts today');
+      await expect(s.fileSelf(leave({ kind: 'EMERGENCY', startDate: plus(1) }), DRIVER_USER)).rejects.toThrow('starts today');
     });
 
     it.each([
@@ -94,55 +112,72 @@ describe('Crew leave', () => {
       ['more than 30 days', { startDate: plus(1), endDate: plus(31) }],
       ['a bad date', { startDate: '2026-02-30' }],
       ['an unknown kind', { kind: 'HOLIDAY' }],
-      ['an unknown crew type', { crewType: 'MECHANIC' }],
     ])('refuses %s', async (_label, extra) => {
       const s = setup();
-      await expect(s.file(leave(extra), OPS)).rejects.toThrow(BadRequestException);
+      await expect(s.fileSelf(leave(extra), DRIVER_USER)).rejects.toThrow(BadRequestException);
     });
 
     it('accepts exactly 30 days', async () => {
       const s = setup();
-      await expect(s.file(leave({ startDate: plus(1), endDate: plus(30) }), OPS)).resolves.toBeDefined();
-    });
-
-    it('refuses crew who are not active', async () => {
-      const s = setup();
-      db.driver.rows[0].isActive = false;
-      await expect(s.file(leave(), OPS)).rejects.toThrow('not found');
+      await expect(s.fileSelf(leave({ startDate: plus(1), endDate: plus(30) }), DRIVER_USER)).resolves.toBeDefined();
     });
 
     it('refuses overlapping requests for the same person, but not for someone else', async () => {
       const s = setup();
-      await s.file(leave({ startDate: plus(1), endDate: plus(5) }), OPS);
-      await expect(s.file(leave({ startDate: plus(5), endDate: plus(6) }), OPS)).rejects.toThrow(ConflictException);
-      await expect(s.file(leave({ startDate: plus(6), endDate: plus(7) }), OPS)).resolves.toBeDefined();
-      await expect(s.file(leave({ crewType: 'HELPER', crewId: HELPER }), OPS)).resolves.toBeDefined();
+      await s.fileSelf(leave({ startDate: plus(1), endDate: plus(5) }), DRIVER_USER);
+      await expect(s.fileSelf(leave({ startDate: plus(5), endDate: plus(6) }), DRIVER_USER)).rejects.toThrow(ConflictException);
+      await expect(s.fileSelf(leave({ startDate: plus(6), endDate: plus(7) }), DRIVER_USER)).resolves.toBeDefined();
+      await expect(s.fileSelf(leave(), HELPER_USER)).resolves.toBeDefined();
+    });
+  });
+
+  describe('Own requests', () => {
+    it('lists only the signed-in crew member\'s requests', async () => {
+      const s = setup();
+      const mine = await s.fileSelf(leave(), DRIVER_USER);
+      await s.fileSelf(leave(), HELPER_USER);
+      expect((await s.selfList(DRIVER_USER)).map((r: Row) => r.id)).toEqual([mine.id]);
+      await expect(s.selfList(randomUUID())).rejects.toThrow(ForbiddenException);
+    });
+
+    it('shows a named history of your own request, and refuses anyone else\'s', async () => {
+      const s = setup();
+      const directory: any = { lookup: async () => new Map([[DRIVER_USER, { name: 'Ramon Cruz' }], [ADMIN, { name: 'Bernardo Mendoza' }]]) };
+      const named = new CrewLeaveService(db, { get: async () => ({}) } as any, directory);
+      const r = await named.fileSelf(leave(), DRIVER_USER);
+      await named.decide(r.id, ADMIN, 'reject', 'Busy week');
+      const view = await named.selfDetail(r.id, DRIVER_USER);
+      expect(view).toEqual(expect.objectContaining({ status: 'Rejected', submittedByName: 'Ramon Cruz', decidedByName: 'Bernardo Mendoza' }));
+      expect(view.audit.map((e) => `${e.action}:${e.actorName}`)).toEqual(['filed:Ramon Cruz', 'rejected:Bernardo Mendoza']);
+      await expect(named.selfDetail(r.id, HELPER_USER)).rejects.toThrow(ForbiddenException);
+      await expect(s.selfDetail(r.id, DRIVER_USER)).resolves.toEqual(expect.objectContaining({ submittedByName: 'Unknown user' }));
     });
   });
 
   describe('Withdraw', () => {
-    it('only the filer can withdraw, only while waiting, and an emergency ends at once', async () => {
+    it('only the crew member can withdraw their own request, only while waiting, and an emergency ends at once', async () => {
       const s = setup();
-      const r = await s.file({ crewType: 'DRIVER', crewId: DRIVER, kind: 'EMERGENCY', reason: 'Sick' }, OPS);
-      await expect(s.withdraw(r.id, randomUUID())).rejects.toThrow(ForbiddenException);
-      const w = await s.withdraw(r.id, OPS);
+      const r = await s.fileSelf(emergency(), DRIVER_USER);
+      await expect(s.withdrawSelf(r.id, HELPER_USER)).rejects.toThrow(ForbiddenException);
+      await expect(s.withdrawSelf(r.id, randomUUID())).rejects.toThrow(ForbiddenException);
+      const w = await s.withdrawSelf(r.id, DRIVER_USER);
       expect(w.status).toBe('Withdrawn');
       expect((await s.onLeave(today)).has(DRIVER)).toBe(false);
-      await expect(s.withdraw(r.id, OPS)).rejects.toThrow('Only waiting');
+      await expect(s.withdrawSelf(r.id, DRIVER_USER)).rejects.toThrow('Only waiting');
     });
 
     it('a withdrawn request no longer blocks a new one for the same dates', async () => {
       const s = setup();
-      const r = await s.file(leave(), OPS);
-      await s.withdraw(r.id, OPS);
-      await expect(s.file(leave(), OPS)).resolves.toBeDefined();
+      const r = await s.fileSelf(leave(), DRIVER_USER);
+      await s.withdrawSelf(r.id, DRIVER_USER);
+      await expect(s.fileSelf(leave(), DRIVER_USER)).resolves.toBeDefined();
     });
   });
 
   describe('Admin decision', () => {
     it('approving a leave puts the person on leave for those dates only', async () => {
       const s = setup();
-      const r = await s.file(leave({ startDate: plus(1), endDate: plus(2) }), OPS);
+      const r = await s.fileSelf(leave({ startDate: plus(1), endDate: plus(2) }), DRIVER_USER);
       const d = await s.decide(r.id, ADMIN, 'approve');
       expect(d.status).toBe('Approved');
       expect((await s.onLeave(plus(1))).has(DRIVER)).toBe(true);
@@ -154,7 +189,7 @@ describe('Crew leave', () => {
 
     it('confirming an emergency is recorded as "confirmed"', async () => {
       const s = setup();
-      const r = await s.file({ crewType: 'DRIVER', crewId: DRIVER, kind: 'EMERGENCY', reason: 'Sick' }, OPS);
+      const r = await s.fileSelf(emergency(), DRIVER_USER);
       await s.decide(r.id, ADMIN, 'approve');
       expect(db.crewLeaveEvent.rows.at(-1).action).toBe('confirmed');
       expect((await s.onLeave(today)).has(DRIVER)).toBe(true);
@@ -162,7 +197,7 @@ describe('Crew leave', () => {
 
     it('rejecting needs a reason, and a rejected emergency returns the person to available', async () => {
       const s = setup();
-      const r = await s.file({ crewType: 'DRIVER', crewId: DRIVER, kind: 'EMERGENCY', reason: 'Sick' }, OPS);
+      const r = await s.fileSelf(emergency(), DRIVER_USER);
       await expect(s.decide(r.id, ADMIN, 'reject', '')).rejects.toThrow(BadRequestException);
       const d = await s.decide(r.id, ADMIN, 'reject', 'No proof');
       expect(d).toEqual(expect.objectContaining({ status: 'Rejected', decisionReason: 'No proof' }));
@@ -171,15 +206,15 @@ describe('Crew leave', () => {
 
     it('the filer cannot decide their own request, and nobody can decide twice', async () => {
       const s = setup();
-      const r = await s.file(leave(), OPS);
-      await expect(s.decide(r.id, OPS, 'approve')).rejects.toThrow('your own');
+      const r = await s.fileSelf(leave(), DRIVER_USER);
+      await expect(s.decide(r.id, DRIVER_USER, 'approve')).rejects.toThrow('your own');
       await s.decide(r.id, ADMIN, 'approve');
       await expect(s.decide(r.id, randomUUID(), 'reject', 'x')).rejects.toThrow('already been decided');
     });
 
     it('cannot approve once the dates have passed', async () => {
       const s = setup();
-      const r = await s.file(leave(), OPS);
+      const r = await s.fileSelf(leave(), DRIVER_USER);
       db.crewLeaveRequest.rows[0].startDate = plus(-3);
       db.crewLeaveRequest.rows[0].endDate = plus(-2);
       await expect(s.decide(r.id, ADMIN, 'approve')).rejects.toThrow('already passed');
@@ -189,12 +224,12 @@ describe('Crew leave', () => {
   describe('Approvals queue', () => {
     it('lists waiting requests and approved ones in the shape the Approvals page uses', async () => {
       const s = setup();
-      const a = await s.file(leave(), OPS);
-      const b = await s.file({ crewType: 'HELPER', crewId: HELPER, kind: 'EMERGENCY', reason: 'Flood' }, OPS);
+      const a = await s.fileSelf(leave(), DRIVER_USER);
+      const b = await s.fileSelf(emergency('Flood'), HELPER_USER);
       const waiting = (await s.approvalItems()).items;
       expect(waiting).toHaveLength(2);
       expect(waiting.find((i) => i.id === b.id)).toEqual(expect.objectContaining({
-        type: 'crew', subtype: 'emergency', bookingNo: 'HLP-001', client: 'Mark Anthony (Helper)', amount: null, status: 'Requested',
+        type: 'crew', subtype: 'emergency', bookingNo: 'HLP-001', client: 'Mark Anthony (Helper)', amount: null, status: 'Requested', submittedBy: HELPER_USER,
       }));
       await s.decide(a.id, ADMIN, 'approve');
       expect((await s.approvalItems()).items.map((i) => i.id)).toEqual([b.id]);
@@ -205,25 +240,10 @@ describe('Crew leave', () => {
       const s = setup();
       const bookingUuid = randomUUID();
       db.dispatchAssignment.rows.push({ bookingUuid, serviceDate: plus(1), dispatchTime: '08:00', state: 'CONFIRMED', driverId: DRIVER, helperIds: [] });
-      const r = await s.file(leave(), OPS);
+      const r = await s.fileSelf(leave(), DRIVER_USER);
       const detail = await s.approvalDetail(r.id);
       expect(detail.audit.map((e) => e.action)).toEqual(['filed']);
       expect(detail.affectedTrips).toEqual([expect.objectContaining({ bookingUuid, serviceDate: plus(1), crewName: 'Ramon Cruz' })]);
-    });
-  });
-
-  describe("Operations' own view", () => {
-    it('shows the filer a named history, and refuses anyone else', async () => {
-      const s = setup();
-      const directory: any = { lookup: async () => new Map([[OPS, { name: 'Oscar Santos' }], [ADMIN, { name: 'Bernardo Mendoza' }]]) };
-      const named = new CrewLeaveService(db, { get: async () => ({}) } as any, directory);
-      const r = await named.file(leave(), OPS);
-      await named.decide(r.id, ADMIN, 'reject', 'Busy week');
-      const view = await named.mineDetail(r.id, OPS);
-      expect(view).toEqual(expect.objectContaining({ status: 'Rejected', submittedByName: 'Oscar Santos', decidedByName: 'Bernardo Mendoza' }));
-      expect(view.audit.map((e) => `${e.action}:${e.actorName}`)).toEqual(['filed:Oscar Santos', 'rejected:Bernardo Mendoza']);
-      await expect(named.mineDetail(r.id, randomUUID())).rejects.toThrow(ForbiddenException);
-      await expect(s.mineDetail(r.id, OPS)).resolves.toEqual(expect.objectContaining({ submittedByName: 'Unknown user' }));
     });
   });
 
@@ -232,7 +252,7 @@ describe('Crew leave', () => {
       const s = setup();
       const trip = { bookingUuid: randomUUID(), serviceDate: plus(1), dispatchTime: '08:00', state: 'CONFIRMED', driverId: randomUUID(), helperIds: [HELPER] };
       db.dispatchAssignment.rows.push(trip, { bookingUuid: randomUUID(), serviceDate: plus(5), dispatchTime: '08:00', state: 'CONFIRMED', driverId: randomUUID(), helperIds: [HELPER] });
-      const r = await s.file(leave({ crewType: 'HELPER', crewId: HELPER }), OPS);
+      const r = await s.fileSelf(leave(), HELPER_USER);
       expect(await s.conflicts()).toHaveLength(0); // a waiting leave isn't in effect yet
       await s.decide(r.id, ADMIN, 'approve');
       const flagged = await s.conflicts();
@@ -243,19 +263,19 @@ describe('Crew leave', () => {
 
     it('blocks assigning a driver or helper who is on leave on the service date', async () => {
       const s = setup();
-      const r = await s.file(leave({ crewType: 'HELPER', crewId: HELPER, startDate: plus(1), endDate: plus(1) }), OPS);
+      const r = await s.fileSelf(leave({ startDate: plus(1), endDate: plus(1) }), HELPER_USER);
       await expect(s.assertAvailable(plus(1), DRIVER, [HELPER])).resolves.toBeUndefined(); // still waiting
       await s.decide(r.id, ADMIN, 'approve');
       await expect(s.assertAvailable(plus(1), DRIVER, [HELPER])).rejects.toThrow('Mark Anthony is on leave');
       await expect(s.assertAvailable(plus(2), DRIVER, [HELPER])).resolves.toBeUndefined();
-      await s.file({ crewType: 'DRIVER', crewId: DRIVER, kind: 'EMERGENCY', reason: 'Sick' }, OPS);
+      await s.fileSelf(emergency(), DRIVER_USER);
       await expect(s.assertAvailable(today, DRIVER, [])).rejects.toThrow('Ramon Cruz is on emergency leave');
     });
 
     it('lists leave in effect from a date onward for the pickers', async () => {
       const s = setup();
-      const a = await s.file(leave({ startDate: plus(1), endDate: plus(2) }), OPS);
-      await s.file(leave({ crewType: 'HELPER', crewId: HELPER, startDate: plus(3), endDate: plus(4) }), OPS);
+      const a = await s.fileSelf(leave({ startDate: plus(1), endDate: plus(2) }), DRIVER_USER);
+      await s.fileSelf(leave({ startDate: plus(3), endDate: plus(4) }), HELPER_USER);
       await s.decide(a.id, ADMIN, 'approve');
       expect((await s.active()).map((x) => x.crewId)).toEqual([DRIVER]);
       expect(await s.active(plus(3))).toEqual([]);

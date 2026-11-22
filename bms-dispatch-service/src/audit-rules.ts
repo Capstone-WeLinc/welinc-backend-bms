@@ -35,10 +35,10 @@ export const AUDIT_RULES: AuditRule[] = [
   ...person('drivers', 'driver'),
   ...person('helpers', 'helper'),
   {
-    method: 'POST', pattern: /^\/crew-leave$/, label: (ctx) => {
+    method: 'POST', pattern: /^\/crew-leave\/self$/, label: (ctx) => {
       const kind = (asText(ctx.result.kind) ?? asText(ctx.body.kind))?.toUpperCase() === 'EMERGENCY' ? 'emergency' : 'leave';
-      return withRef(`Filed crew ${kind}`, asText(ctx.result.crewName));
+      return withRef(`Filed own ${kind}`, asText(ctx.result.crewName));
     },
   },
-  { method: 'POST', pattern: new RegExp(`^/crew-leave/${ID}/withdraw$`), label: (ctx) => withRef('Withdrew crew leave request', asText(ctx.result.crewName)) },
+  { method: 'POST', pattern: new RegExp(`^/crew-leave/self/${ID}/withdraw$`), label: (ctx) => withRef('Withdrew own leave request', asText(ctx.result.crewName)) },
 ];

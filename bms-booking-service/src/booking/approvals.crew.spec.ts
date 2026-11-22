@@ -6,7 +6,7 @@ import { ApprovalsService } from './approvals.service';
 const crewItem = {
   id: 'c1', type: 'crew', subtype: 'emergency', bookingNo: 'DRV-001', client: 'Ramon Cruz (Driver)',
   summary: 'Emergency 2026-11-21: Sick', amount: null, submittedAt: '2026-11-21T01:00:00.000Z',
-  submittedBy: 'ops-1', status: 'Requested',
+  submittedBy: 'driver-1', status: 'Requested',
 };
 const refundItem = {
   id: 'r1', type: 'refund', subtype: null, bookingNo: 'BK-1', client: 'Client', summary: 'Refund requested: x',
@@ -46,7 +46,7 @@ describe('Approvals – crew leave', () => {
   });
 
   it('only Admin can open a crew request', async () => {
-    const { service } = setup(() => ({ status: 200, body: { ...crewItem, requestedBy: 'ops-1', audit: [] } }));
+    const { service } = setup(() => ({ status: 200, body: { ...crewItem, requestedBy: 'driver-1', audit: [] } }));
     await expect(service.detail('crew', 'c1', 'cs-1', false)).rejects.toThrow(ForbiddenException);
     await expect(service.detail('crew', 'c1', 'admin-1', true)).resolves.toEqual(expect.objectContaining({ id: 'c1', submittedByName: 'Unknown user' }));
   });
@@ -66,7 +66,7 @@ describe('Approvals – crew leave', () => {
 
   it('crew requests are not withdrawn or resubmitted through Approvals', async () => {
     const { service } = setup(() => ({ status: 200, body: {} }));
-    await expect(service.withdraw('crew', 'c1', 'ops-1')).rejects.toThrow('Crew Leave page');
-    await expect(service.resubmit('crew', 'c1', 'ops-1', {})).rejects.toThrow('new crew leave request');
+    await expect(service.withdraw('crew', 'c1', 'driver-1')).rejects.toThrow('driver or helper who filed it');
+    await expect(service.resubmit('crew', 'c1', 'driver-1', {})).rejects.toThrow('new crew leave request');
   });
 });
