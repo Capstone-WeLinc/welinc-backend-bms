@@ -84,15 +84,10 @@ model VehicleAvailabilitySampleVehicle {
 }
 
 model Helper {
+  // The account in Auth; name, email and contact number are read from there (spec bms/0012)
   userId String? @unique @map("user_id") @db.Uuid
   id               String   @id @default(uuid()) @db.Uuid
-  empId            String   @unique @map("emp_id") @db.VarChar(40)
-  name             String   @db.VarChar(100)
-  initials         String?  @db.VarChar(10)
-  contact          String?  @db.VarChar(80)
-  email            String?  @db.VarChar(160)
   crewStatus       String   @default("Available") @map("crew_status") @db.VarChar(40)
-  totalTrips       Int      @default(0) @map("total_trips")
   joinDate         DateTime? @map("join_date") @db.Date
   emergencyName    String?  @map("emergency_name") @db.VarChar(160)
   emergencyContact String?  @map("emergency_contact") @db.VarChar(80)
@@ -118,21 +113,16 @@ model AuditEvent {
 
 model Driver {
   id String @id @default(uuid()) @db.Uuid
+  // The account in Auth; name, email and contact number are read from there (spec bms/0012)
   userId String? @unique @map("user_id") @db.Uuid
-  empId String @unique @map("emp_id") @db.VarChar(40)
-  name String @db.VarChar(100)
-  initials String? @db.VarChar(10)
   crewStatus String @default("Available") @map("crew_status") @db.VarChar(40)
-  licenseNumber String @map("license_number") @db.VarChar(50)
+  licenseNumber String? @map("license_number") @db.VarChar(50)
   licenseType String @default("Professional") @map("license_type") @db.VarChar(50)
   licenseExpiry DateTime? @map("license_expiry") @db.Date
-  contact String? @db.VarChar(80)
-  email String? @db.VarChar(160)
   address String? @db.Text
   emergencyName String? @map("emergency_name") @db.VarChar(160)
   emergencyContact String? @map("emergency_contact") @db.VarChar(80)
   joinDate DateTime? @map("join_date") @db.Date
-  totalTrips Int @default(0) @map("total_trips")
   isActive Boolean @default(true) @map("is_active")
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
@@ -171,7 +161,6 @@ model CrewLeaveRequest {
   id             String    @id @default(uuid()) @db.Uuid
   crewType       String    @map("crew_type") @db.VarChar(10)
   crewId         String    @map("crew_id") @db.Uuid
-  crewEmpId      String    @map("crew_emp_id") @db.VarChar(40)
   crewName       String    @map("crew_name") @db.VarChar(100)
   kind           String    @db.VarChar(12)
   startDate      String    @map("start_date") @db.VarChar(10)

@@ -52,8 +52,8 @@ const plus = (days: number) => new Date(Date.parse(`${today}T00:00:00Z`) + days 
 
 function setup() {
   db = {
-    driver: table([{ id: DRIVER, userId: DRIVER_USER, empId: 'DRV-001', name: 'Ramon Cruz', isActive: true, deletedAt: null }]),
-    helper: table([{ id: HELPER, userId: HELPER_USER, empId: 'HLP-001', name: 'Mark Anthony', isActive: true }]),
+    driver: table([{ id: DRIVER, userId: DRIVER_USER, isActive: true, deletedAt: null }]),
+    helper: table([{ id: HELPER, userId: HELPER_USER, isActive: true }]),
     crewLeaveRequest: table([], () => ({ status: 'Requested', requestedAt: new Date(), decidedBy: null, decidedAt: null, decisionReason: null })),
     crewLeaveEvent: table([], () => ({ createdAt: new Date() })),
     dispatchAssignment: table([]),
@@ -61,7 +61,10 @@ function setup() {
   };
   db.$transaction = async (fn: (tx: any) => any) => fn(db);
   const bookings: any = { get: async (id: string) => ({ id, bookingNo: 'BK-' + id.slice(0, 4), client: 'Client' }) };
-  return new CrewLeaveService(db, bookings);
+  // Crew names come from the account in Auth (spec bms/0012).
+  const people = new Map([[DRIVER_USER, { name: 'Ramon Cruz' }], [HELPER_USER, { name: 'Mark Anthony' }]]);
+  const directory: any = { lookup: async (ids: string[]) => new Map(ids.flatMap((id) => (people.has(id) ? [[id, people.get(id)]] : []))) };
+  return new CrewLeaveService(db, bookings, directory);
 }
 
 const leave = (extra: Row = {}) => ({ kind: 'LEAVE', startDate: plus(1), endDate: plus(2), reason: 'Family event', ...extra });
@@ -73,8 +76,9 @@ describe('Crew leave', () => {
       const s = setup();
       const r = await s.fileSelf(leave(), DRIVER_USER);
       expect(r).toEqual(expect.objectContaining({
-        status: 'Requested', kind: 'LEAVE', crewType: 'DRIVER', crewId: DRIVER, crewName: 'Ramon Cruz', crewEmpId: 'DRV-001', requestedBy: DRIVER_USER,
+        status: 'Requested', kind: 'LEAVE', crewType: 'DRIVER', crewId: DRIVER, crewName: 'Ramon Cruz', requestedBy: DRIVER_USER,
       }));
+      expect(r).not.toHaveProperty('crewEmpId');
       expect(db.crewLeaveEvent.rows).toEqual([expect.objectContaining({ action: 'filed', actorId: DRIVER_USER })]);
       expect((await s.onLeave(plus(1))).has(DRIVER)).toBe(false);
     });
@@ -141,7 +145,7 @@ describe('Crew leave', () => {
     });
 
     it('shows a named history of your own request, and refuses anyone else\'s', async () => {
-      const s = setup();
+      setup();
       const directory: any = { lookup: async () => new Map([[DRIVER_USER, { name: 'Ramon Cruz' }], [ADMIN, { name: 'Bernardo Mendoza' }]]) };
       const named = new CrewLeaveService(db, { get: async () => ({}) } as any, directory);
       const r = await named.fileSelf(leave(), DRIVER_USER);
@@ -150,7 +154,9 @@ describe('Crew leave', () => {
       expect(view).toEqual(expect.objectContaining({ status: 'Rejected', submittedByName: 'Ramon Cruz', decidedByName: 'Bernardo Mendoza' }));
       expect(view.audit.map((e) => `${e.action}:${e.actorName}`)).toEqual(['filed:Ramon Cruz', 'rejected:Bernardo Mendoza']);
       await expect(named.selfDetail(r.id, HELPER_USER)).rejects.toThrow(ForbiddenException);
-      await expect(s.selfDetail(r.id, DRIVER_USER)).resolves.toEqual(expect.objectContaining({ submittedByName: 'Unknown user' }));
+      // Without the directory, names fall back instead of failing.
+      const unnamed = new CrewLeaveService(db, { get: async () => ({}) } as any);
+      await expect(unnamed.selfDetail(r.id, DRIVER_USER)).resolves.toEqual(expect.objectContaining({ submittedByName: 'Unknown user' }));
     });
   });
 
@@ -229,7 +235,7 @@ describe('Crew leave', () => {
       const waiting = (await s.approvalItems()).items;
       expect(waiting).toHaveLength(2);
       expect(waiting.find((i) => i.id === b.id)).toEqual(expect.objectContaining({
-        type: 'crew', subtype: 'emergency', bookingNo: 'HLP-001', client: 'Mark Anthony (Helper)', amount: null, status: 'Requested', submittedBy: HELPER_USER,
+        type: 'crew', subtype: 'emergency', bookingNo: 'Mark Anthony', client: 'Mark Anthony (Helper)', amount: null, status: 'Requested', submittedBy: HELPER_USER,
       }));
       await s.decide(a.id, ADMIN, 'approve');
       expect((await s.approvalItems()).items.map((i) => i.id)).toEqual([b.id]);

@@ -21,7 +21,7 @@ describe("VMMS fleet consumer", () => {
         },
         driver: { findMany: async () => [] },
       } as any,
-      { lookup: async () => new Map() } as any,
+      { lookup: async () => new Map(), roster: async () => [] } as any,
       { getOrThrow: () => "http://vmms" } as any,
       { internalUrl: "http://auth" } as any,
       {} as any,

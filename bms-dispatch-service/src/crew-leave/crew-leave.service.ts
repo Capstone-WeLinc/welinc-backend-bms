@@ -16,7 +16,7 @@ import { DirectoryClient } from '../auth/directory.client';
 export type CrewType = 'DRIVER' | 'HELPER';
 export type LeaveKind = 'LEAVE' | 'EMERGENCY';
 type Row = {
-  id: string; crewType: string; crewId: string; crewEmpId: string; crewName: string; kind: string;
+  id: string; crewType: string; crewId: string; crewName: string; kind: string;
   startDate: string; endDate: string; reason: string; status: string; requestedBy: string; requestedAt: Date;
   decidedBy: string | null; decidedAt: Date | null; decisionReason: string | null;
 };
@@ -55,13 +55,19 @@ export class CrewLeaveService {
     @Optional() private readonly directory?: DirectoryClient,
   ) {}
 
-  /** The crew record linked to this login: an active driver first, then an active helper. */
-  private async selfCrew(actor: string): Promise<{ type: CrewType; id: string; empId: string; name: string }> {
+  /**
+   * The crew record linked to this login: an active driver first, then an active helper. The name
+   * is the account's name in Auth (spec bms/0012); BMS keeps no copy of it.
+   */
+  private async selfCrew(actor: string): Promise<{ type: CrewType; id: string; name: string }> {
     if (UUID.test(actor)) {
       const driver = await this.prisma.driver.findFirst({ where: { userId: actor, isActive: true, deletedAt: null } });
-      if (driver) return { type: 'DRIVER', id: driver.id, empId: driver.empId, name: driver.name };
-      const helper = await this.prisma.helper.findFirst({ where: { userId: actor, isActive: true } });
-      if (helper) return { type: 'HELPER', id: helper.id, empId: helper.empId, name: helper.name };
+      const helper = driver ? null : await this.prisma.helper.findFirst({ where: { userId: actor, isActive: true } });
+      const row = driver ?? helper;
+      if (row) {
+        const people = this.directory ? await this.directory.lookup([actor]).catch(() => new Map()) : new Map();
+        return { type: driver ? 'DRIVER' : 'HELPER', id: row.id, name: people.get(actor)?.name ?? 'Unknown user' };
+      }
     }
     throw new ForbiddenException('Your login is not linked to an active driver or helper');
   }
@@ -115,7 +121,7 @@ export class CrewLeaveService {
         throw new ConflictException(`You already have a ${kindLabel(overlap.kind).toLowerCase()} request for ${dateRange(overlap)}`);
       }
       const created = await tx.crewLeaveRequest.create({ data: {
-        crewType, crewId, crewEmpId: person.empId, crewName: person.name, kind,
+        crewType, crewId, crewName: person.name, kind,
         startDate, endDate, reason, requestedBy: actor,
       } });
       await tx.crewLeaveEvent.create({ data: { requestId: created.id, actorId: actor, action: 'filed', reason } });
@@ -219,7 +225,8 @@ export class CrewLeaveService {
     const kind = kindLabel(row.kind);
     return {
       id: row.id, type: 'crew', subtype: row.kind === 'EMERGENCY' ? 'emergency' : 'leave',
-      bookingNo: row.crewEmpId, client: `${row.crewName} (${crewLabel(row.crewType)})`,
+      // The crew member's name heads the row; BMS has no employee ID (spec bms/0012).
+      bookingNo: row.crewName, client: `${row.crewName} (${crewLabel(row.crewType)})`,
       summary: `${kind} ${dateRange(row)}: ${row.reason}`, amount: null,
       submittedAt: row.requestedAt.toISOString(), submittedBy: row.requestedBy,
       status: row.status, decisionReason: row.decisionReason,

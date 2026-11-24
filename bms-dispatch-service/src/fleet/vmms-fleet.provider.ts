@@ -5,16 +5,12 @@ import {
   Inject,
   Injectable,
   NotFoundException,
-  OnModuleDestroy,
-  OnModuleInit,
   ServiceUnavailableException,
 } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PrismaService } from "../prisma.service";
-import {
-  DirectoryClient,
-  type DirectoryPerson,
-} from "../auth/directory.client";
+import { DirectoryClient } from "../auth/directory.client";
+import { accountFields, linkedCrew, type Linked } from "./crew-roster";
 import {
   ASSERTION_SIGNER,
   AssertionSigner,
@@ -22,6 +18,7 @@ import {
   VERIFY_CONFIG,
   type VerifyConfig,
 } from "../auth/verify";
+import type { Driver } from "@prisma/client";
 import type {
   AssignmentResources,
   DriverRecord,
@@ -43,19 +40,8 @@ export type FleetVehicle = {
   garageId: string | null;
   updatedAt: string;
 };
-export function permanentCrew(
-  person: DirectoryPerson | undefined,
-  role: string,
-) {
-  return (
-    !!person &&
-    person.isActive &&
-    !person.deleted &&
-    !person.erased &&
-    person.roles.includes(role) &&
-    !(person.temporaryRoles ?? []).includes(role)
-  );
-}
+// Kept here too for older imports; it lives with the crew roster now.
+export { permanentCrew } from "./crew-roster";
 const unavailable = () =>
   new ServiceUnavailableException({
     code: "FLEET_UNAVAILABLE",
@@ -67,13 +53,10 @@ const vehicleUnavailable = () =>
     message: "Vehicle is unavailable",
   });
 @Injectable()
-export class VmmsFleetProvider
-  implements FleetProvider, OnModuleInit, OnModuleDestroy
-{
+export class VmmsFleetProvider implements FleetProvider {
   private readonly tokens: ServiceTokenClient;
   private readonly root: string;
   private readonly cache = new Map<string, { until: number; value: unknown }>();
-  private timer?: NodeJS.Timeout;
   constructor(
     private readonly prisma: PrismaService,
     private readonly directory: DirectoryClient,
@@ -91,20 +74,7 @@ export class VmmsFleetProvider
       scope: "fleet.read",
     });
   }
-  onModuleInit() {
-    void this.syncErased().catch(() => {});
-    this.timer = setInterval(
-      () => void this.syncErased().catch(() => {}),
-      24 * 60 * 60 * 1000,
-    );
-    this.timer.unref();
-  }
-  onModuleDestroy() {
-    if (this.timer) clearInterval(this.timer);
-  }
-  async close() {
-    this.onModuleDestroy();
-  }
+  async close() {}
   private async ask<T>(path: string, cached = false): Promise<T> {
     const old = this.cache.get(path);
     if (cached && old && old.until > Date.now()) return old.value as T;
@@ -169,37 +139,26 @@ export class VmmsFleetProvider
       };
     });
   }
-  private mapDriver(d: any): DriverRecord {
+  private mapDriver({ row: d, person }: Linked<Driver>): DriverRecord {
     return {
       id: d.id,
-      empId: d.empId,
-      fullName: d.name,
-      initials: d.initials ?? "",
+      ...accountFields(person),
       status: d.crewStatus,
-      licenseNo: d.licenseNumber,
+      licenseNo: d.licenseNumber ?? "",
       licenseType: d.licenseType,
       licenseExpiry: d.licenseExpiry,
-      totalTrips: d.totalTrips,
       joinDate: d.joinDate,
-      contact: d.contact ?? "",
-      email: d.email ?? "",
       address: d.address ?? "",
       emergencyName: d.emergencyName ?? "",
       emergencyContact: d.emergencyContact ?? "",
       updatedAt: d.updatedAt,
     };
   }
+  /** Everyone who holds the Driver role in Auth, with their BMS details (spec bms/0012). */
   async drivers(): Promise<DriverRecord[]> {
-    const rows = await this.prisma.driver.findMany({
-      where: { isActive: true, deletedAt: null },
-      orderBy: { name: "asc" },
-    });
-    const people = await this.directory.lookup(
-      rows.flatMap((d) => (d.userId ? [d.userId] : [])),
+    return (await linkedCrew(this.prisma, this.directory, "DRIVER")).map((d) =>
+      this.mapDriver(d),
     );
-    return rows
-      .filter((d) => !d.userId || permanentCrew(people.get(d.userId), "DRIVER"))
-      .map((d) => this.mapDriver(d));
   }
   async assignmentResources(
     vehicleId: string,
@@ -230,21 +189,22 @@ export class VmmsFleetProvider
       driver: driver ? { id: driver.id, status: driver.status } : null,
     };
   }
+  /** Only the details BMS keeps; name, email and contact number are edited in the portal. */
   private data(body: Record<string, unknown>) {
     const data: Record<string, unknown> = {};
     const fields: Record<string, string> = {
-      fullName: "name",
       licenseNo: "licenseNumber",
       licenseType: "licenseType",
-      contact: "contact",
-      email: "email",
       address: "address",
       status: "crewStatus",
       emergencyName: "emergencyName",
       emergencyContact: "emergencyContact",
     };
     for (const [from, to] of Object.entries(fields))
-      if (body[from] !== undefined) data[to] = String(body[from]);
+      if (body[from] !== undefined)
+        data[to] = body[from] === null || body[from] === "" ? null : String(body[from]);
+    if (data.crewStatus === null) delete data.crewStatus;
+    if (data.licenseType === null) delete data.licenseType;
     for (const key of ["licenseExpiry", "joinDate"])
       if (body[key] !== undefined) {
         const raw = body[key];
@@ -255,63 +215,10 @@ export class VmmsFleetProvider
           throw new BadRequestException("Invalid " + key);
         data[key] = date;
       }
-    if (typeof data.name === "string")
-      data.initials = data.name
-        .split(/\s+/)
-        .slice(0, 2)
-        .map((p) => p[0])
-        .join("");
     return data;
   }
-  async createDriver(body: Record<string, unknown>) {
-    const [{ value }] = await this.prisma.$queryRaw<
-      Array<{ value: bigint }>
-    >`SELECT nextval('dispatch_driver_emp_no_seq') AS value`;
-    const d = await this.prisma.driver.create({
-      data: {
-        ...this.data(body),
-        name: String(body.fullName),
-        licenseNumber: String(body.licenseNo),
-        empId: `DRV-${String(value).padStart(3, "0")}`,
-      },
-    });
-    return this.mapDriver(d);
-  }
   async updateDriver(id: string, body: Record<string, unknown>) {
-    const d = await this.prisma.driver.update({
-      where: { id },
-      data: this.data(body),
-    });
-    return this.mapDriver(d);
-  }
-  async removeDriver(id: string) {
-    await this.prisma.driver.update({
-      where: { id },
-      data: { isActive: false, deletedAt: new Date() },
-    });
-  }
-  private async syncErased() {
-    const [drivers, helpers] = await Promise.all([
-      this.prisma.driver.findMany({
-        where: { userId: { not: null } },
-        select: { userId: true },
-      }),
-      this.prisma.helper.findMany({
-        where: { userId: { not: null } },
-        select: { userId: true },
-      }),
-    ]);
-    const people = await this.directory.lookup(
-      [...drivers, ...helpers].flatMap((d) => (d.userId ? [d.userId] : [])),
-    );
-    for (const p of people.values())
-      if (p.erased) {
-        const data = {
-          name: "Deleted user",
-          email: `deleted-${p.id}@erased.invalid`,
-        };
-        await this.prisma.driver.updateMany({ where: { userId: p.id }, data });
-        await this.prisma.helper.updateMany({ where: { userId: p.id }, data });
-      }
+    await this.prisma.driver.update({ where: { id }, data: this.data(body) });
+    return (await this.drivers()).find((driver) => driver.id === id);
   }
 }

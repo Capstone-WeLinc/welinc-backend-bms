@@ -43,15 +43,17 @@ async function main(){
   const db=new pg.Client({connectionString:process.env.DATABASE_URL});await db.connect();
   try{
     const [driversResult,helpersResult,profilesResult,assignmentsResult]=await Promise.all([
-      db.query('SELECT id,user_id,name,emp_id FROM drivers WHERE is_active AND deleted_at IS NULL ORDER BY emp_id'),
-      db.query('SELECT id,user_id,name,emp_id FROM helpers WHERE is_active ORDER BY emp_id'),
+      db.query('SELECT id,user_id FROM drivers WHERE is_active AND deleted_at IS NULL AND user_id IS NOT NULL ORDER BY created_at,id'),
+      db.query('SELECT id,user_id FROM helpers WHERE is_active AND user_id IS NOT NULL ORDER BY created_at,id'),
       db.query('SELECT vehicle_id,required_helpers FROM vehicle_dispatch_profiles'),
       db.query("SELECT * FROM dispatch_assignments WHERE state IN ('PENDING','CONFIRMED','RELEASING')"),
     ]);
     const identities=await directory.lookup([...driversResult.rows,...helpersResult.rows].map(r=>r.user_id).filter(Boolean).concat(Object.values(actors)));
     const eligible=(row,role)=>{const p=identities.get(row.user_id);return p&&p.isActive&&!p.deleted&&!p.erased&&p.roles.includes(role)&&!(p.temporaryRoles??[]).includes(role);};
     for(const [role,id] of Object.entries(actors)){const p=identities.get(id);const expected={admin:'ADMIN',ops:'OPERATIONS',cs:'CUSTOMER_SUPPORT'}[role];if(!p||!p.isActive||p.deleted||p.erased||!p.roles.includes(expected)||(p.temporaryRoles??[]).includes(expected))throw seedError('ACTIVE_PERMANENT_SUITE_ACTORS_REQUIRED');}
-    const drivers=driversResult.rows.filter(r=>eligible(r,'DRIVER')),helpers=helpersResult.rows.filter(r=>eligible(r,'HELPER'));
+    // Names come from the account (spec bms/0012); the rows hold only BMS details.
+    const named=row=>({...row,name:identities.get(row.user_id).name});
+    const drivers=driversResult.rows.filter(r=>eligible(r,'DRIVER')).map(named),helpers=helpersResult.rows.filter(r=>eligible(r,'HELPER')).map(named);
     if(!drivers.length||!helpers.length)throw seedError('LINKED_SUITE_CREW_REQUIRED_RUN_BASE_SEEDS');
     const anchor=process.env.BMS_SEED_ANCHOR_DATE||new Date().toLocaleDateString('en-CA',{timeZone:'Asia/Manila'});
     const fixtures=scenarios(anchor),demoIds=new Set(fixtures.map(r=>r.id));
