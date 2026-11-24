@@ -22,7 +22,7 @@ export const VERIFY_CONFIG = Symbol('VERIFY_CONFIG');
 /** Signs this service's client assertions with `AUTH_CLIENT_PRIVATE_KEY` (spec 0002, 0003). */
 export const ASSERTION_SIGNER = Symbol('ASSERTION_SIGNER');
 
-/** This service's token for welinc-auth's directory: `audience=AUTH`, `scope=directory.read`. */
+/** This service's token for welinc-auth's directory: `audience=AUTH`, `scope=directory.read directory.contact`. */
 export const DIRECTORY_TOKENS = Symbol('DIRECTORY_TOKENS');
 
 /** This service's token for its permission matrix (suite spec 0013, AC-29): `scope=permissions.read`. */
@@ -94,7 +94,8 @@ export function readVerifyConfig(
           tokenUrl: `${verify.internalUrl}/auth/token`,
           signer,
           audience: 'AUTH',
-          scope: 'directory.read',
+          // directory.contact fills `phone`, the crew contact number on Team Management (spec bms/0012)
+          scope: 'directory.read directory.contact',
           onError: (reason) =>
             logger.warn(`could not get a service token: ${reason}`),
         });

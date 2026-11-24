@@ -8,10 +8,11 @@ export type VehicleRecord = {
   lastMaintenance?: unknown; nextMaintenance?: unknown; driverId?: string | null; garage?: string | null;
   statusReason?: string | null; statusSince?: unknown; expectedBackAt?: unknown; statusRemarks?: string | null;
 };
+/** A driver: `userId`, `fullName`, `email` and `contact` come from Auth, the rest from BMS (spec bms/0012). */
 export type DriverRecord = {
-  id: string; empId: string; fullName: string; initials: string; status: string; licenseNo: string;
-  licenseType: string; licenseExpiry?: unknown; totalTrips?: number | null; joinDate?: unknown;
-  contact: string; email: string; address: string; emergencyName: string; emergencyContact: string;
+  id: string; userId: string; fullName: string; email: string; contact: string; status: string;
+  licenseNo: string; licenseType: string; licenseExpiry?: unknown; joinDate?: unknown;
+  address: string; emergencyName: string; emergencyContact: string;
   vehicleId?: string | null; isVerified?: boolean; updatedAt?: unknown;
 };
 export type AssignmentResources = {
@@ -24,8 +25,7 @@ export interface FleetProvider {
   vehicles(): Promise<VehicleRecord[]>;
   drivers(): Promise<DriverRecord[]>;
   assignmentResources(vehicleId: string, driverId: string): Promise<AssignmentResources>;
-  createDriver(body: Record<string, unknown>): Promise<DriverRecord | undefined>;
+  /** Saves only the BMS details; a driver is never created or removed here (spec bms/0012). */
   updateDriver(id: string, body: Record<string, unknown>): Promise<DriverRecord | undefined>;
-  removeDriver(id: string): Promise<void>;
   close(): Promise<void>;
 }

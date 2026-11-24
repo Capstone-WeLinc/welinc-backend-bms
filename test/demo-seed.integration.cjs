@@ -97,7 +97,8 @@ test('full demo seeds resume, preserve edits, project without DDL and obey servi
   await cleanupCheck.connect();
   try {
    await cleanupCheck.query('BEGIN');
-   await cleanupCheck.query('CREATE TEMP TABLE helpers (LIKE public.helpers INCLUDING DEFAULTS) ON COMMIT DROP; CREATE TEMP TABLE dispatch_assignments (helper_ids text[]) ON COMMIT DROP; CREATE TEMP TABLE dispatch_job_orders (team text) ON COMMIT DROP');
+   // The helpers table as that old migration saw it; spec bms/0011 later removed emp_id, name, initials and total_trips.
+   await cleanupCheck.query("CREATE TEMP TABLE helpers (id uuid PRIMARY KEY, user_id uuid, emp_id varchar(40), name varchar(100), initials varchar(10), contact varchar(80), email varchar(160), crew_status varchar(40) NOT NULL DEFAULT 'Available', join_date date, is_active boolean NOT NULL DEFAULT true, emergency_name varchar(160), emergency_contact varchar(80), total_trips int NOT NULL DEFAULT 0, created_at timestamptz, updated_at timestamptz) ON COMMIT DROP; CREATE TEMP TABLE dispatch_assignments (helper_ids text[]) ON COMMIT DROP; CREATE TEMP TABLE dispatch_job_orders (team text) ON COMMIT DROP");
    const fixtures=[['HLP-001','Jose Ramos','JR',null,false],['HLP-002','Pedro Garcia','PG',null,true],['HLP-003','Miguel Torres','MT',null,false],['HLP-001','Jose Ramos','JR',randomUUID(),false]];
    const ids=[];
    for(const [emp,name,initials,user,edited] of fixtures){const id=randomUUID();ids.push(id);await cleanupCheck.query("INSERT INTO helpers(id,emp_id,name,initials,user_id,created_at,updated_at) VALUES($1,$2,$3,$4,$5,'2020-01-01',$6)",[id,emp,name,initials,user,edited?'2020-01-02':'2020-01-01']);}

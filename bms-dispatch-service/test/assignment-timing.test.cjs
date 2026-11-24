@@ -215,7 +215,7 @@ test('only authoritative fleet vehicles appear, with no sample-only vehicles or 
     vehicles: async () => [{ id: 'real-id', plateNumber: 'NCF-7716', status: 'AVAILABLE', capacity: '0', requiredHelpers: 2 }],
     drivers: async () => [],
   };
-  const rows = await new FleetService(prisma, { lookup: async()=>new Map() }, { list: async () => [] }, provider).vehicleAvailability();
+  const rows = await new FleetService(prisma, { lookup: async()=>new Map(), roster: async () => [] }, { list: async () => [] }, provider).vehicleAvailability();
   assert.deepEqual(rows.map((row) => row.plateNumber), ['NCF-7716']);
   assert.equal(rows[0].id, 'real-id');
   assert.equal(rows[0].driver, null);
@@ -227,18 +227,20 @@ test('trucks and crew only show as busy on the date they are booked', async () =
   const vehicleId = '11111111-1111-4111-8111-111111111111';
   const driverId = '22222222-2222-4222-8222-222222222222';
   const helperId = '33333333-3333-4333-8333-333333333333';
+  const helperUser = '55555555-5555-4555-8555-555555555555';
   const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });
   const run = async (serviceDate) => {
     const rows = [{ serviceDate, vehicleId, driverId, helperIds: [helperId], state: 'CONFIRMED' }];
     const prisma = {
       dispatchAssignment: { findMany: async ({ where }) => rows.filter((row) => !where.serviceDate || row.serviceDate === where.serviceDate) },
-      helper: { findMany: async () => [{ id: helperId, empId: 'HLP-001', name: 'Helper', initials: 'H', crewStatus: 'Available' }] },
+      helper: { findMany: async () => [{ id: helperId, userId: helperUser, isActive: true, crewStatus: 'Available' }] },
     };
     const provider = {
       vehicles: async () => [{ id: vehicleId, status: 'AVAILABLE' }],
       drivers: async () => [{ id: driverId, status: 'Available' }],
     };
-    const service = new FleetService(prisma, { lookup: async()=>new Map() }, {}, provider);
+    const helperPerson = { id: helperUser, name: 'Helper', email: 'helper@example.test', roles: ['HELPER'], temporaryRoles: [], isActive: true, deleted: false };
+    const service = new FleetService(prisma, { lookup: async()=>new Map(), roster: async () => [helperPerson] }, {}, provider);
     return { vehicle: (await service.vehicles())[0].isAssigned, driver: (await service.drivers())[0].status, helper: (await service.helpers())[0].status };
   };
   assert.deepEqual(await run(today), { vehicle: true, driver: 'On Duty', helper: 'On Duty' });

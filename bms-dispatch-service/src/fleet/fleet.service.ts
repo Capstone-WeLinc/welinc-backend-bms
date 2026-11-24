@@ -1,5 +1,5 @@
 import { DirectoryClient } from '../auth/directory.client';
-import { permanentCrew } from './vmms-fleet.provider';
+import { accountFields, linkedCrew } from './crew-roster';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { CrewLeaveService } from '../crew-leave/crew-leave.service';
 import { PrismaService } from '../prisma.service';
@@ -41,6 +41,18 @@ function required(value: unknown, name: string, max: number) {
   const text = String(value ?? '').trim();
   if (!text || text.length > max) throw new BadRequestException(`Invalid ${name}`);
   return text;
+}
+
+/** Name, email and contact number belong to the account; Admin edits them in the portal (spec bms/0012). */
+function refuseAccountFields(body: Record<string, unknown>) {
+  if (['fullName', 'email', 'contact'].some((key) => body[key] !== undefined)) {
+    throw new BadRequestException('Name, email and contact number are edited in the portal');
+  }
+}
+
+function optionalText(value: unknown, name: string, max: number) {
+  if (value === undefined) return undefined;
+  return value === null || value === '' ? null : required(value, name, max);
 }
 
 function optionalDate(value: unknown, name: string) {
@@ -129,8 +141,8 @@ export class FleetService {
         dimensions: vehicleDimensions(vehicle.truckTypeId || vehicle.type),
         requiredHelpersMin: vehicle.requiredHelpers,
         requiredHelpersMax: vehicle.requiredHelpers,
-        driver: assignedDriver ? { id: assignedDriver.id, name: assignedDriver.fullName, initials: assignedDriver.initials } : null,
-        helpers: assignedHelpers.map((helper) => ({ id: helper!.id, name: helper!.fullName, initials: helper!.initials })),
+        driver: assignedDriver ? { id: assignedDriver.id, name: assignedDriver.fullName } : null,
+        helpers: assignedHelpers.map((helper) => ({ id: helper!.id, name: helper!.fullName })),
         currentAssignment: primary && currentBooking ? {
           bookingNumber: currentBooking.bookingNo || currentBooking.bookingId,
           jobOrderNumber: jobOrderByBooking.get(primary.bookingUuid) ?? null,
@@ -175,20 +187,19 @@ export class FleetService {
     }));
   }
 
+  /** Everyone who holds the Helper role in Auth, with their BMS details (spec bms/0012). */
   async helpers() {
-    const [rows, activeAssignments] = await Promise.all([
-      this.prisma.helper.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } }),
+    const [linked, activeAssignments] = await Promise.all([
+      linkedCrew(this.prisma, this.directory, 'HELPER'),
       this.prisma.dispatchAssignment.findMany({ where: { state: { in: ['PENDING', 'CONFIRMED', 'RELEASING'] }, serviceDate: manilaToday() }, select: { helperIds: true } }),
     ]);
     const assigned = new Set(activeAssignments.flatMap((item) => item.helperIds));
-    const people = await this.directory.lookup(rows.flatMap(h=>h.userId?[h.userId]:[]));
-    const away = await this.onLeaveToday(rows.map((helper) => helper.id));
-    return rows.filter(h=>!h.userId || permanentCrew(people.get(h.userId),'HELPER')).map((helper) => ({
-      id: helper.id, empId: helper.empId, fullName: helper.name, initials: helper.initials,
-      contact: helper.contact ?? '', email: helper.email ?? '',
+    const away = await this.onLeaveToday(linked.map(({ row }) => row.id));
+    return linked.map(({ row: helper, person }) => ({
+      id: helper.id, ...accountFields(person),
       status: away.has(helper.id) ? 'On Leave' : assigned.has(helper.id) ? 'On Duty' : helper.crewStatus,
       ...(away.has(helper.id) && { leaveUntil: away.get(helper.id).endDate }),
-      totalTrips: helper.totalTrips, joinDate: helper.joinDate?.toISOString().slice(0, 10) ?? '',
+      joinDate: helper.joinDate?.toISOString().slice(0, 10) ?? '',
       emergencyName: helper.emergencyName ?? '', emergencyContact: helper.emergencyContact ?? '',
       updatedAt: helper.updatedAt?.toISOString() ?? null,
     }));
@@ -207,72 +218,43 @@ export class FleetService {
     if (new Set(helperIds).size !== helperIds.length || helperIds.length < vehicle.requiredHelpers) {
       throw new BadRequestException('Required helpers are missing or duplicated');
     }
-    const helpers = await this.prisma.helper.findMany({ where: { id: { in: helperIds }, isActive: true } });
-    const people = await this.directory.lookup(helpers.flatMap(h=>h.userId?[h.userId]:[]));
-    if (helpers.length !== helperIds.length || helpers.some(h=>h.userId && !permanentCrew(people.get(h.userId),'HELPER'))) throw new BadRequestException('Helper is unavailable');
+    // Only helpers who hold the role in Auth right now can be assigned.
+    const crew = new Map((await linkedCrew(this.prisma, this.directory, 'HELPER')).map(({ row }) => [row.id, row]));
+    const helpers = helperIds.map((id) => crew.get(id));
+    if (helpers.some((h) => !h)) throw new BadRequestException('Helper is unavailable');
     // Helpers get the same manual-status check as drivers; before this, helper status was never checked.
-    if (helpers.some((h) => !['Available', 'On Duty'].includes(h.crewStatus || 'Available'))) throw new BadRequestException('Helper is unavailable');
+    if (helpers.some((h) => !['Available', 'On Duty'].includes(h!.crewStatus || 'Available'))) throw new BadRequestException('Helper is unavailable');
     if (serviceDate && this.leave) await this.leave.assertAvailable(serviceDate, driverId, helperIds);
     return { plateNumber: vehicle.plateNumber };
   }
 
-  async createHelper(body: Record<string, unknown>) {
-    const name = required(body.fullName, 'fullName', 100);
-    const [{ value }] = await this.prisma.$queryRaw<Array<{ value: bigint }>>`SELECT nextval('dispatch_helper_emp_no_seq') AS value`;
-    const helper = await this.prisma.helper.create({ data: {
-      empId: `HLP-${String(value).padStart(3, '0')}`, name,
-      initials: name.split(/\s+/).slice(0, 2).map((part) => part[0].toUpperCase()).join(''),
-      contact: body.contact ? required(body.contact, 'contact', 80) : null,
-      email: body.email ? required(body.email, 'email', 160) : null,
-      crewStatus: STATUS.includes(String(body.status)) ? String(body.status) : 'Available',
-      joinDate: optionalDate(body.joinDate, 'joinDate'),
-      emergencyName: body.emergencyName ? required(body.emergencyName, 'emergencyName', 160) : null,
-      emergencyContact: body.emergencyContact ? required(body.emergencyContact, 'emergencyContact', 80) : null,
-    } });
-    return (await this.helpers()).find((item) => item.id === helper.id);
-  }
-
+  /** Saves the helper's BMS details only; name, email and contact number come from Auth. */
   async updateHelper(id: string, body: Record<string, unknown>) {
+    refuseAccountFields(body);
     const helper = await this.prisma.helper.findUnique({ where: { id } });
-    if (!helper?.isActive) throw new NotFoundException('Helper not found');
+    if (!helper?.isActive || !helper.userId) throw new NotFoundException('Helper not found');
+    if (body.status !== undefined && !STATUS.includes(String(body.status))) throw new BadRequestException('Invalid status');
     await this.prisma.helper.update({ where: { id }, data: {
-      ...(body.fullName !== undefined && { name: required(body.fullName, 'fullName', 100) }),
-      ...(body.contact !== undefined && { contact: body.contact ? required(body.contact, 'contact', 80) : null }),
-      ...(body.email !== undefined && { email: body.email ? required(body.email, 'email', 160) : null }),
-      ...(body.status !== undefined && { crewStatus: required(body.status, 'status', 40) }),
+      ...(body.status !== undefined && { crewStatus: String(body.status) }),
       ...(body.joinDate !== undefined && { joinDate: optionalDate(body.joinDate, 'joinDate') }),
-      ...(body.emergencyName !== undefined && { emergencyName: body.emergencyName ? required(body.emergencyName, 'emergencyName', 160) : null }),
-      ...(body.emergencyContact !== undefined && { emergencyContact: body.emergencyContact ? required(body.emergencyContact, 'emergencyContact', 80) : null }),
+      ...(body.emergencyName !== undefined && { emergencyName: optionalText(body.emergencyName, 'emergencyName', 160) }),
+      ...(body.emergencyContact !== undefined && { emergencyContact: optionalText(body.emergencyContact, 'emergencyContact', 80) }),
     } });
     return (await this.helpers()).find((item) => item.id === id);
   }
 
-  async removeHelper(id: string) {
-    await this.prisma.helper.update({ where: { id }, data: { isActive: false } });
-    return { success: true };
-  }
-
-  async createDriver(body: Record<string, unknown>) {
-    const fullName = required(body.fullName, 'fullName', 100);
-    const licenseNo = required(body.licenseNo, 'licenseNo', 50);
-    return this.provider.createDriver({ ...body, fullName, licenseNo });
-  }
-
+  /** Saves the driver's BMS details only; name, email and contact number come from Auth. */
   async updateDriver(id: string, body: Record<string, unknown>) {
+    refuseAccountFields(body);
     if (!uuid.test(id)) throw new BadRequestException('Invalid driver ID');
     const current = (await this.provider.drivers()).find((driver) => driver.id === id);
     if (!current) throw new NotFoundException('Driver not found');
-    const fullName = body.fullName === undefined ? current.fullName : required(body.fullName, 'fullName', 100);
-    const status = body.status === undefined ? current.status : required(body.status, 'status', 40);
-    if (!STATUS.includes(String(status))) throw new BadRequestException('Invalid status');
+    if (body.status !== undefined && !STATUS.includes(String(body.status))) throw new BadRequestException('Invalid status');
+    if (body.licenseNo !== undefined) optionalText(body.licenseNo, 'licenseNo', 50);
     if (body.licenseExpiry !== undefined) optionalDate(body.licenseExpiry, 'licenseExpiry');
     if (body.joinDate !== undefined) optionalDate(body.joinDate, 'joinDate');
-    return this.provider.updateDriver(id, { ...body, fullName, status });
-  }
-
-  async removeDriver(id: string) {
-    if (!uuid.test(id)) throw new BadRequestException('Invalid driver ID');
-    await this.provider.removeDriver(id);
-    return { success: true };
+    if (body.emergencyName !== undefined) optionalText(body.emergencyName, 'emergencyName', 160);
+    if (body.emergencyContact !== undefined) optionalText(body.emergencyContact, 'emergencyContact', 80);
+    return this.provider.updateDriver(id, body);
   }
 }

@@ -2,10 +2,10 @@ import { asObject, asText, bookingRef, withRef, type AuditContext, type AuditRul
 
 const ID = '([^/]+)';
 
+/** Crew are never created or deleted in BMS any more, only edited (spec bms/0012). */
 function person(segment: 'drivers' | 'helpers', noun: string): AuditRule[] {
   const named = (ctx: AuditContext) => asText(ctx.result.fullName) ?? asText(ctx.body.fullName) ?? asText(ctx.result.name) ?? asText(ctx.body.name);
   return [
-    { method: 'POST', pattern: new RegExp(`^/bms/config/${segment}$`), label: (ctx) => withRef(`Created ${noun}`, named(ctx)) },
     {
       method: 'PATCH', pattern: new RegExp(`^/bms/config/${segment}/${ID}/status$`), label: (ctx) => {
         const status = asText(ctx.body.status);
@@ -13,7 +13,6 @@ function person(segment: 'drivers' | 'helpers', noun: string): AuditRule[] {
       },
     },
     { method: 'PATCH', pattern: new RegExp(`^/bms/config/${segment}/${ID}$`), label: (ctx) => withRef(`Updated ${noun}`, named(ctx)) },
-    { method: 'DELETE', pattern: new RegExp(`^/bms/config/${segment}/${ID}$`), label: (ctx) => withRef(`Deleted ${noun}`, named(ctx)) },
   ];
 }
 
