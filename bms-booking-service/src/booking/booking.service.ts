@@ -118,7 +118,7 @@ export class BookingService {
       estimatedItems: input.estimatedItems,
       servicesAvailed: input.servicesAvailed ?? [],
       protectiveMaterials: input.protectiveMaterials ?? [],
-      additionalServicesAvailed: (input.additionalServicesAvailed ?? []).map(({ name, price }) => ({ name, price })),
+      additionalServicesAvailed: (input.additionalServicesAvailed ?? []).map(({ name, price, cashCharge }) => ({ name, price, ...(cashCharge ? { cashCharge } : {}) })),
       hasInsurance: input.hasInsurance ?? false,
       permitRequired: input.permitRequired ?? false,
       status,

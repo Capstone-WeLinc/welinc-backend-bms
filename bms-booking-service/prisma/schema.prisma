@@ -164,6 +164,14 @@ model ServiceOffering {
   description String?  @db.VarChar(500)
   duration    String?  @db.VarChar(50)
   price       Decimal  @default(0) @db.Decimal(10, 2)
+  // What the customer gets, how they can pay, and what isn't covered: shown with View details
+  // on Services Offered and in the New Booking wizard (spec bms/0013)
+  inclusions     String[] @default([])
+  paymentOptions String[] @default([]) @map("payment_options")
+  exclusions     String[] @default([])
+  // Added once per service when the booking is paid in cash (spec bms/0013); separate from the
+  // booking's cash-on-delivery surcharge
+  cashCharge     Decimal  @default(0) @map("cash_charge") @db.Decimal(10, 2)
   isActive    Boolean  @default(true) @map("is_active")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
   updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
