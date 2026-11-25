@@ -1,9 +1,11 @@
 import { Type } from 'class-transformer';
-import { Equals, IsArray, IsBoolean, IsEmail, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, MaxLength, Min, ValidateNested } from 'class-validator';
+import { Equals, IsArray, IsBoolean, IsEmail, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Matches, Max, MaxLength, Min, ValidateNested } from 'class-validator';
 
 class AdditionalServiceDto {
   @IsString() @IsNotEmpty() @MaxLength(150) name!: string;
   @IsString() @IsNotEmpty() @MaxLength(100) price!: string;
+  /** What paying in cash added for this service when the booking was made (spec bms/0013). */
+  @IsOptional() @IsNumber({ maxDecimalPlaces: 2 }) @Min(0) @Max(99999999.99) cashCharge?: number;
 }
 
 class SelectedTruckDto {

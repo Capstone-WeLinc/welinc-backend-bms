@@ -23,6 +23,23 @@ function optionalText(value: string | undefined): string | null | undefined {
   return value === undefined ? undefined : value.trim() || null;
 }
 
+/** A list of detail lines, trimmed, with blank lines dropped (spec bms/0013). */
+function detailList(value: string[] | undefined): string[] | undefined {
+  return value === undefined ? undefined : value.map((line) => line.trim()).filter(Boolean);
+}
+
+/** Only the detail lists that were sent, so a partial update leaves the others alone. */
+function details(input: { inclusions?: string[]; paymentOptions?: string[]; exclusions?: string[] }) {
+  const inclusions = detailList(input.inclusions);
+  const paymentOptions = detailList(input.paymentOptions);
+  const exclusions = detailList(input.exclusions);
+  return {
+    ...(inclusions !== undefined && { inclusions }),
+    ...(paymentOptions !== undefined && { paymentOptions }),
+    ...(exclusions !== undefined && { exclusions }),
+  };
+}
+
 function uniqueName(error: unknown, label: string): never {
   if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
     throw new BadRequestException(`A ${label} with this name already exists`);
@@ -32,6 +49,11 @@ function uniqueName(error: unknown, label: string): never {
 
 function withPrice<T extends { price: Prisma.Decimal }>(row: T): Omit<T, 'price'> & { price: number } {
   return { ...row, price: Number(row.price) };
+}
+
+/** An additional service row with its money fields as numbers. */
+function offering<T extends { price: Prisma.Decimal; cashCharge: Prisma.Decimal }>(row: T) {
+  return { ...withPrice(row), cashCharge: Number(row.cashCharge) };
 }
 
 @Injectable()
@@ -75,7 +97,7 @@ export class CatalogService {
 
   async servicesOffered() {
     const rows = await this.prisma.serviceOffering.findMany({ where: { isActive: true }, orderBy: { name: 'asc' } });
-    return rows.map(withPrice);
+    return rows.map(offering);
   }
 
   async createServiceOffered(input: CreateServiceOfferingDto) {
@@ -83,6 +105,9 @@ export class CatalogService {
     const data = {
       name: itemName, description: optionalText(input.description) ?? null, duration: optionalText(input.duration) ?? null,
       price: input.price, isActive: true,
+      // Re-adding a removed service replaces its old details, like its other fields.
+      inclusions: [], paymentOptions: [], exclusions: [], ...details(input),
+      cashCharge: input.cashCharge ?? 0,
     };
     const existing = await this.prisma.serviceOffering.findUnique({ where: { name: itemName } });
     if (existing?.isActive) throw new BadRequestException('A service with this name already exists');
@@ -90,7 +115,7 @@ export class CatalogService {
       const row = existing
         ? await this.prisma.serviceOffering.update({ where: { id: existing.id }, data })
         : await this.prisma.serviceOffering.create({ data });
-      return withPrice(row);
+      return offering(row);
     } catch (error) { return uniqueName(error, 'service'); }
   }
 
@@ -104,8 +129,10 @@ export class CatalogService {
         ...(input.description !== undefined && { description: optionalText(input.description) }),
         ...(input.duration !== undefined && { duration: optionalText(input.duration) }),
         ...(input.price !== undefined && { price: input.price }),
+        ...details(input),
+        ...(input.cashCharge !== undefined && { cashCharge: input.cashCharge }),
       } });
-      return withPrice(row);
+      return offering(row);
     } catch (error) { return uniqueName(error, 'service'); }
   }
 
@@ -114,7 +141,7 @@ export class CatalogService {
     const existing = await this.prisma.serviceOffering.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('Service not found');
     const row = await this.prisma.serviceOffering.update({ where: { id }, data: { isActive: false } });
-    return withPrice(row);
+    return offering(row);
   }
 
   async protectiveMaterials() {
