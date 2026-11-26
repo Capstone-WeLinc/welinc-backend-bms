@@ -171,11 +171,13 @@ export class CrewLeaveService {
   }
 
   /** Blocks an assignment when its driver or any helper is on leave on the service date. */
-  async assertAvailable(serviceDate: string, driverId: string, helperIds: string[]) {
+  /** A Subcon assignment has no driver of ours, so driverId may be null. */
+  async assertAvailable(serviceDate: string, driverId: string | null, helperIds: string[]) {
     const date = String(serviceDate ?? '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-    const away = await this.onLeave(date, [driverId, ...helperIds]);
-    const first = [driverId, ...helperIds].map((id) => away.get(id)).find(Boolean);
+    const crewIds = driverId ? [driverId, ...helperIds] : helperIds;
+    const away = await this.onLeave(date, crewIds);
+    const first = crewIds.map((id) => away.get(id)).find(Boolean);
     if (first) {
       throw new ConflictException({
         code: 'CREW_ON_LEAVE',

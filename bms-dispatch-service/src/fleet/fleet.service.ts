@@ -206,16 +206,27 @@ export class FleetService {
   }
 
   /** `serviceDate` (YYYY-MM-DD) also blocks crew who are on leave that day (spec bms/0003). */
-  async checkAssignment(vehicleId: string, driverId: string, helperIds: string[], serviceDate?: string) {
-    if (!uuid.test(vehicleId) || !uuid.test(driverId) || helperIds.some((id) => !uuid.test(id))) {
+  /**
+   * Checks the truck, driver and helpers for an assignment. A Subcon assignment passes null for the
+   * vehicle and driver (the subcontractor brings them), so only its helpers are checked.
+   */
+  async checkAssignment(vehicleId: string | null, driverId: string | null, helperIds: string[], serviceDate?: string) {
+    const subcon = vehicleId === null && driverId === null;
+    if ((!subcon && (!uuid.test(vehicleId ?? '') || !uuid.test(driverId ?? ''))) || helperIds.some((id) => !uuid.test(id))) {
       throw new BadRequestException('Assignment requires persisted fleet and crew IDs');
     }
-    const { vehicle, driver } = await this.provider.assignmentResources(vehicleId, driverId);
-    if (!vehicle || vehicle.status !== 'AVAILABLE') throw new ConflictException({code:'VEHICLE_UNAVAILABLE',message:'Vehicle is unavailable'});
-    if (!driver || !['Available', 'On Duty'].includes(driver.status ?? 'Available')) {
-      throw new BadRequestException('Driver is unavailable');
+    let requiredHelpers = 1;
+    let plateNumber: string | null = null;
+    if (!subcon) {
+      const { vehicle, driver } = await this.provider.assignmentResources(vehicleId!, driverId!);
+      if (!vehicle || vehicle.status !== 'AVAILABLE') throw new ConflictException({code:'VEHICLE_UNAVAILABLE',message:'Vehicle is unavailable'});
+      if (!driver || !['Available', 'On Duty'].includes(driver.status ?? 'Available')) {
+        throw new BadRequestException('Driver is unavailable');
+      }
+      requiredHelpers = vehicle.requiredHelpers;
+      plateNumber = vehicle.plateNumber;
     }
-    if (new Set(helperIds).size !== helperIds.length || helperIds.length < vehicle.requiredHelpers) {
+    if (new Set(helperIds).size !== helperIds.length || helperIds.length < Math.max(1, requiredHelpers)) {
       throw new BadRequestException('Required helpers are missing or duplicated');
     }
     // Only helpers who hold the role in Auth right now can be assigned.
@@ -225,7 +236,7 @@ export class FleetService {
     // Helpers get the same manual-status check as drivers; before this, helper status was never checked.
     if (helpers.some((h) => !['Available', 'On Duty'].includes(h!.crewStatus || 'Available'))) throw new BadRequestException('Helper is unavailable');
     if (serviceDate && this.leave) await this.leave.assertAvailable(serviceDate, driverId, helperIds);
-    return { plateNumber: vehicle.plateNumber };
+    return { plateNumber };
   }
 
   /** Saves the helper's BMS details only; name, email and contact number come from Auth. */
