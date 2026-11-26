@@ -19,6 +19,38 @@ function manilaToday() {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
 }
 
+/**
+ * Reads an assignment request. A Subcon booking is done by a subcontractor's own truck and driver,
+ * so it has no garage, vehicle or driver of ours: those are stored as null and only helpers are assigned.
+ */
+function assignmentFields(input: Record<string, unknown>) {
+  const deliveryType = String(input.deliveryType ?? '');
+  const subcon = deliveryType === 'Subcon';
+  return {
+    dispatchTime: String(input.dispatchTime ?? input.time ?? ''),
+    deliveryType,
+    subcon,
+    garage: subcon ? null : String(input.garage ?? ''),
+    vehicleId: subcon ? null : String(input.vehicleId ?? ''),
+    driverId: subcon ? null : String(input.driverId ?? ''),
+    helperIds: input.helperIds,
+  };
+}
+
+/** Matches another assignment that holds the same truck, driver or any of the helpers. */
+function sharesCrew(vehicleId: string | null, driverId: string | null, helperIds: string[]) {
+  return [
+    ...(vehicleId ? [{ vehicleId }] : []),
+    ...(driverId ? [{ driverId }] : []),
+    { helperIds: { hasSome: helperIds } },
+  ];
+}
+
+/** Subcon assignments have no driver of ours; everything else needs one before a job order. */
+function hasRequiredCrew(assignment: { deliveryType: string | null; driverId: string | null; helperIds: string[] }) {
+  return assignment.helperIds.length > 0 && (assignment.deliveryType === 'Subcon' || Boolean(assignment.driverId));
+}
+
 @Injectable()
 export class DispatchService {
   // Each lookup is a paid Google request, and the same addresses repeat while a dialog is open.
@@ -65,12 +97,12 @@ export class DispatchService {
     return { vehicles: summarize(groups.vehicles), drivers: summarize(groups.drivers), helpers: summarize(groups.helpers) };
   }
 
-  private async enforceTiming(id: string, input: { vehicleId: string; driverId: string; helperIds: string[] }, travelConfirmed: boolean) {
+  private async enforceTiming(id: string, input: { vehicleId: string | null; driverId: string | null; helperIds: string[] }, travelConfirmed: boolean) {
     const timing = await this.resourceTiming(id);
     const results = [
-      timing.vehicles[input.vehicleId], timing.drivers[input.driverId],
+      input.vehicleId ? timing.vehicles[input.vehicleId] : undefined, input.driverId ? timing.drivers[input.driverId] : undefined,
       ...input.helperIds.map((helperId) => timing.helpers[helperId]),
-    ].filter(Boolean);
+    ].filter((result): result is TimingResult => Boolean(result));
     const worst = worstTiming(results);
     if (worst.status === 'blocked') throw new ConflictException(worst.message);
     if (worst.status === 'unverified' && !travelConfirmed) {
@@ -134,10 +166,10 @@ export class DispatchService {
       assignment: activeAssignment ? {
         updatedAt: activeAssignment.updatedAt.toISOString(),
         driverAssigned: Boolean(activeAssignment.driverId),
-        driverName: driver?.fullName ?? 'Assigned driver',
+        driverName: driver?.fullName ?? (activeAssignment.deliveryType === 'Subcon' ? 'Subcontractor' : 'Assigned driver'),
         driverContact: driver?.contact ?? '',
         helperNames: assignedHelpers.map((helper) => helper.fullName),
-        vehicleLabel: vehicle ? `${vehicle.plateNumber} ${vehicle.alias ?? ''}`.trim() : 'Unavailable vehicle',
+        vehicleLabel: vehicle ? `${vehicle.plateNumber} ${vehicle.alias ?? ''}`.trim() : activeAssignment.deliveryType === 'Subcon' ? 'Subcontractor truck' : 'Unavailable vehicle',
       } : null,
       jobOrder: jobOrder ? { status: jobOrder.status, updatedAt: jobOrder.updatedAt.toISOString() } : null,
     };
@@ -152,8 +184,11 @@ export class DispatchService {
     const assignments = await this.prisma.dispatchAssignment.findMany({
       where: {
         bookingUuid: { in: distributedOrders.map((item) => item.bookingUuid) },
-        state: 'CONFIRMED', driverId: { not: null }, vehicleId: { not: null },
-        helperIds: { isEmpty: false }, dispatchTime: { not: null }, garage: { not: null }, deliveryType: { not: null },
+        state: 'CONFIRMED', helperIds: { isEmpty: false }, dispatchTime: { not: null },
+        OR: [
+          { deliveryType: 'Subcon' },
+          { deliveryType: { not: null }, driverId: { not: null }, vehicleId: { not: null }, garage: { not: null } },
+        ],
       },
       select: { bookingUuid: true },
     });
@@ -226,25 +261,23 @@ export class DispatchService {
       this.prisma.dispatchAssignment.findUnique({ where: { bookingUuid: id } }),
     ]);
     if (!booking.permitRequired || !assignment || !['PENDING', 'CONFIRMED', 'RELEASING'].includes(assignment.state)) return;
+    const requested = assignmentFields(input);
     const requestedHelpers = Array.isArray(input.helperIds) ? (input.helperIds as unknown[]).map(String) : [];
     const sameHelpers = requestedHelpers.length === assignment.helperIds.length &&
       [...requestedHelpers].sort().join('|') === [...assignment.helperIds].sort().join('|');
-    if (String(input.vehicleId ?? '') !== assignment.vehicleId || String(input.driverId ?? '') !== assignment.driverId || !sameHelpers) {
+    if (requested.vehicleId !== assignment.vehicleId || requested.driverId !== assignment.driverId || !sameHelpers) {
       throw new ConflictException('This booking requires a permit, so its truck, driver and helpers are locked once assigned. You can still change the dispatch time, garage and delivery type.');
     }
   }
 
   async validateAssignment(id: string, input: Record<string, unknown>) {
     requireUuid(id);
-    const dispatchTime = String(input.dispatchTime ?? input.time ?? '');
-    const garage = String(input.garage ?? '');
-    const deliveryType = String(input.deliveryType ?? '');
-    const vehicleId = String(input.vehicleId ?? '');
-    const driverId = String(input.driverId ?? '');
-    const helperIds = input.helperIds;
-    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(dispatchTime) || !garage || !['Inhouse', 'Subcon'].includes(deliveryType) ||
+    const { dispatchTime, garage, deliveryType, vehicleId, driverId, helperIds, subcon } = assignmentFields(input);
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(dispatchTime) || (!subcon && !garage) || !['Inhouse', 'Subcon'].includes(deliveryType) ||
       !Array.isArray(helperIds) || helperIds.length === 0 || helperIds.some((value) => typeof value !== 'string')) {
-      throw new BadRequestException('Complete dispatch time, garage, delivery type, vehicle, driver, and helpers');
+      throw new BadRequestException(subcon
+        ? 'Complete dispatch time, delivery type, and helpers'
+        : 'Complete dispatch time, garage, delivery type, vehicle, driver, and helpers');
     }
     const booking = await this.bookings.get(id);
     // A truck can't be sent on a day that has already gone; CS reschedules first.
@@ -255,46 +288,50 @@ export class DispatchService {
     if (!assignment && !['For Plotting', 'Rescheduled'].includes(booking.status)) {
       throw new ConflictException('Booking is not ready for assignment');
     }
-    const activeGarage = (await this.fleet.garages()).some((item) => item.name === garage);
-    if (!activeGarage) throw new BadRequestException('Garage is unavailable');
+    if (!subcon) {
+      const activeGarage = (await this.fleet.garages()).some((item) => item.name === garage);
+      if (!activeGarage) throw new BadRequestException('Garage is unavailable');
+    }
     await this.fleet.checkAssignment(vehicleId, driverId, helperIds as string[], String(booking.date ?? ''));
     if ((await this.bookings.pendingChange(id)).pending) throw new ConflictException('This booking has a pending reschedule or cancellation request');
     const conflict = await this.prisma.dispatchAssignment.findFirst({ where: {
       bookingUuid: { not: id }, serviceDate: booking.date, dispatchTime,
       state: { in: ['PENDING', 'CONFIRMED', 'RELEASING'] },
-      OR: [{ vehicleId }, { driverId }, { helperIds: { hasSome: helperIds as string[] } }],
+      OR: sharesCrew(vehicleId, driverId, helperIds as string[]),
     } });
     if (conflict) throw new ConflictException('Vehicle or crew is already assigned in this slot');
     const [vehicles, drivers, helpers] = await Promise.all([this.fleet.vehicles(), this.fleet.drivers(), this.fleet.helpers()]);
     return {
       dispatchTime, garage, deliveryType, vehicleId, driverId, helperIds: helperIds as string[],
-      vehicleLabel: vehicles.find((item) => item.id === vehicleId)?.plateNumber ?? 'Unavailable vehicle',
-      driverName: drivers.find((item) => item.id === driverId)?.fullName ?? driverId,
+      vehicleLabel: subcon ? 'Subcon' : vehicles.find((item) => item.id === vehicleId)?.plateNumber ?? 'Unavailable vehicle',
+      driverName: subcon ? 'Subcon' : drivers.find((item) => item.id === driverId)?.fullName ?? driverId,
       helperNames: (helperIds as string[]).map((helperId) => helpers.find((item) => item.id === helperId)?.fullName ?? helperId),
     };
   }
 
   private async confirmAssignment(id: string, input: Record<string, unknown>, actor?: string) {
     requireUuid(id);
-    const dispatchTime = String(input.dispatchTime ?? input.time ?? '');
-    const garage = String(input.garage ?? '');
-    const deliveryType = String(input.deliveryType ?? '');
-    const vehicleId = String(input.vehicleId ?? '');
-    const driverId = String(input.driverId ?? '');
-    const helperIds = input.helperIds;
+    const { dispatchTime, garage, deliveryType, vehicleId, driverId, helperIds } = assignmentFields(input);
     let booking = await this.bookings.get(id);
     const vehicle = await this.fleet.checkAssignment(vehicleId, driverId, helperIds as string[], String(booking.date ?? ''));
-    const assignedDriverName = String((await this.fleet.drivers()).find((item) => item.id === driverId)?.fullName ?? driverId);
+    const assignedDriverName = driverId
+      ? String((await this.fleet.drivers()).find((item) => item.id === driverId)?.fullName ?? driverId)
+      : null;
     // Sent with ConfirmAssignment so the customer's "Team assigned" email can name the truck and crew.
     // (Booking emails while this assignment is still PENDING here, so it can't look the team up itself.)
+    // A Subcon assignment has no truck or driver of ours, so the email lists only the helpers.
     const [fleetVehicles, fleetHelpers] = await Promise.all([this.fleet.vehicles(), this.fleet.helpers()]);
-    const truck = fleetVehicles.find((item) => item.id === vehicleId);
+    const truck = vehicleId ? fleetVehicles.find((item) => item.id === vehicleId) : undefined;
+    const helperNames = (helperIds as string[]).map((helperId) => fleetHelpers.find((item) => item.id === helperId)?.fullName).filter((name): name is string => Boolean(name));
     const team = {
-      truck: truck ? `${truck.plateNumber} ${truck.alias ?? ''}`.trim() : vehicle.plateNumber,
-      driverName: assignedDriverName,
-      helperNames: (helperIds as string[]).map((helperId) => fleetHelpers.find((item) => item.id === helperId)?.fullName).filter((name): name is string => Boolean(name)),
+      truck: truck ? `${truck.plateNumber} ${truck.alias ?? ''}`.trim() : vehicle.plateNumber ?? undefined,
+      driverName: assignedDriverName ?? undefined,
+      helperNames,
       dispatchTime,
     };
+    // The job order's truck and team columns: Subcon has no plate or driver, so it shows "Subcon" and the helpers.
+    const jobOrderTruck = vehicle.plateNumber ?? 'Subcon';
+    const jobOrderTeam = (assignedDriverName ?? (helperNames.join(', ') || 'Subcon')).slice(0, 100);
     let assignment = await this.prisma.dispatchAssignment.findUnique({ where: { bookingUuid: id } });
     if (!assignment && (!['For Plotting', 'Rescheduled'].includes(booking.status) || booking.operationalHold || booking.paymentHold)) {
       throw new ConflictException('Booking is no longer ready for assignment');
@@ -307,7 +344,7 @@ export class DispatchService {
       const conflicting = await this.prisma.dispatchAssignment.findFirst({ where: {
         id: { not: id }, serviceDate: booking.date, dispatchTime,
         state: { in: ['PENDING', 'CONFIRMED', 'RELEASING'] },
-        OR: [{ vehicleId }, { driverId }, { helperIds: { hasSome: helperIds as string[] } }],
+        OR: sharesCrew(vehicleId, driverId, helperIds as string[]),
       } });
       if (conflicting) throw new ConflictException('Vehicle or crew is held in this slot');
       await this.releaseAssignment(id);
@@ -382,13 +419,13 @@ export class DispatchService {
           create: {
             id, bookingUuid: id, bookingIdAlias: booking.bookingId,
             jobOrderNo: `JO-${new Date().getFullYear()}-${String(value).padStart(4, '0')}`,
-            client: booking.client, serviceDate: booking.date, truck: vehicle.plateNumber,
-            team: assignedDriverName,
+            client: booking.client, serviceDate: booking.date, truck: jobOrderTruck,
+            team: jobOrderTeam,
             status: 'Pending', state: 'ACTIVE',
             generatedAt: new Date(), createdAt: new Date(), updatedAt: new Date(),
           },
-          update: { client: booking.client, serviceDate: booking.date, truck: vehicle.plateNumber,
-            team: assignedDriverName, status: 'Pending', state: 'ACTIVE', updatedAt: new Date() },
+          update: { client: booking.client, serviceDate: booking.date, truck: jobOrderTruck,
+            team: jobOrderTeam, status: 'Pending', state: 'ACTIVE', updatedAt: new Date() },
         });
       }
     });
@@ -442,8 +479,8 @@ export class DispatchService {
       where: {
         bookingUuid: { in: items.map((item) => item.bookingUuid) },
         state: 'CONFIRMED',
-        driverId: { not: null },
         helperIds: { isEmpty: false },
+        OR: [{ deliveryType: 'Subcon' }, { driverId: { not: null } }],
       },
       select: { bookingUuid: true },
     });
@@ -455,8 +492,8 @@ export class DispatchService {
 
   async assignedBookings() {
     return (await this.schedules()).filter((item) =>
-      item.status === 'Assigned' && Boolean(item.driverId) && item.helperIds.length > 0 &&
-      Boolean(item.assignedDriver) && item.assignedHelpers.length > 0,
+      item.status === 'Assigned' && item.helperIds.length > 0 && item.assignedHelpers.length > 0 &&
+      (item.deliveryType === 'Subcon' || (Boolean(item.driverId) && Boolean(item.assignedDriver))),
     );
   }
 
@@ -466,7 +503,7 @@ export class DispatchService {
     const booking = (await this.bookings.list()).find((item) => item.bookingId === bookingIdAlias || item.id === bookingIdAlias);
     if (!booking || booking.status !== 'Assigned') throw new ConflictException('Only assigned bookings can have a job order');
     const assignment = await this.prisma.dispatchAssignment.findUnique({ where: { bookingUuid: booking.id } });
-    if (assignment?.state !== 'CONFIRMED' || !assignment.driverId || assignment.helperIds.length === 0) {
+    if (assignment?.state !== 'CONFIRMED' || !hasRequiredCrew(assignment)) {
       throw new ConflictException('A driver and at least one helper must be assigned before a job order is available');
     }
     const item = await this.prisma.dispatchJobOrder.findUnique({ where: { bookingUuid: booking.id } });
@@ -481,7 +518,7 @@ export class DispatchService {
     const booking = await this.bookings.get(item.bookingUuid);
     if (booking.status !== 'Assigned') throw new ConflictException('Only an assigned booking can be distributed');
     const assignment = await this.prisma.dispatchAssignment.findUnique({ where: { bookingUuid: item.bookingUuid } });
-    if (assignment?.state !== 'CONFIRMED' || !assignment.driverId || assignment.helperIds.length === 0) {
+    if (assignment?.state !== 'CONFIRMED' || !hasRequiredCrew(assignment)) {
       throw new ConflictException('A driver and at least one helper must be assigned before a job order can be distributed');
     }
     const alreadyDistributed = item.status === 'Distributed';

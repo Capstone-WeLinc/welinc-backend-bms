@@ -81,6 +81,15 @@ test('BMS fleet contract maps provider data and delegates BMS-only driver edits'
   assert.deepEqual(await service.checkAssignment(vehicleId, driverId, [helperId]), { plateNumber: 'TEST-001' });
 });
 
+test('a Subcon assignment checks only its helpers, with no truck or driver of ours', async () => {
+  const provider = new FakeFleetProvider();
+  const deps = dependencies(provider);
+  const service = new FleetService(deps.prisma, directory(), deps.bookings, provider);
+  assert.deepEqual(await service.checkAssignment(null, null, [helperId]), { plateNumber: null });
+  await assert.rejects(service.checkAssignment(null, null, []), /Required helpers are missing/);
+  await assert.rejects(service.checkAssignment(vehicleId, null, [helperId]), /persisted fleet and crew IDs/);
+});
+
 test('name, email and contact number are edited in the portal, never in BMS', async () => {
   const provider = new FakeFleetProvider();
   const deps = dependencies(provider);
