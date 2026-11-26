@@ -199,7 +199,6 @@ export class FleetService {
       id: helper.id, ...accountFields(person),
       status: away.has(helper.id) ? 'On Leave' : assigned.has(helper.id) ? 'On Duty' : helper.crewStatus,
       ...(away.has(helper.id) && { leaveUntil: away.get(helper.id).endDate }),
-      joinDate: helper.joinDate?.toISOString().slice(0, 10) ?? '',
       emergencyName: helper.emergencyName ?? '', emergencyContact: helper.emergencyContact ?? '',
       updatedAt: helper.updatedAt?.toISOString() ?? null,
     }));
@@ -247,7 +246,6 @@ export class FleetService {
     if (body.status !== undefined && !STATUS.includes(String(body.status))) throw new BadRequestException('Invalid status');
     await this.prisma.helper.update({ where: { id }, data: {
       ...(body.status !== undefined && { crewStatus: String(body.status) }),
-      ...(body.joinDate !== undefined && { joinDate: optionalDate(body.joinDate, 'joinDate') }),
       ...(body.emergencyName !== undefined && { emergencyName: optionalText(body.emergencyName, 'emergencyName', 160) }),
       ...(body.emergencyContact !== undefined && { emergencyContact: optionalText(body.emergencyContact, 'emergencyContact', 80) }),
     } });
@@ -263,7 +261,6 @@ export class FleetService {
     if (body.status !== undefined && !STATUS.includes(String(body.status))) throw new BadRequestException('Invalid status');
     if (body.licenseNo !== undefined) optionalText(body.licenseNo, 'licenseNo', 50);
     if (body.licenseExpiry !== undefined) optionalDate(body.licenseExpiry, 'licenseExpiry');
-    if (body.joinDate !== undefined) optionalDate(body.joinDate, 'joinDate');
     if (body.emergencyName !== undefined) optionalText(body.emergencyName, 'emergencyName', 160);
     if (body.emergencyContact !== undefined) optionalText(body.emergencyContact, 'emergencyContact', 80);
     return this.provider.updateDriver(id, body);

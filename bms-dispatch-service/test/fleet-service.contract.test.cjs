@@ -69,13 +69,13 @@ test('BMS fleet contract maps provider data and delegates BMS-only driver edits'
 
   const driver = await service.updateDriver(driverId, {
     licenseNo: 'LIC-2', licenseType: 'Professional', licenseExpiry: '2028-10-01',
-    address: 'Quezon City', status: 'Available', joinDate: '2026-09-01',
+    address: 'Quezon City', status: 'Available',
     emergencyName: 'New Contact', emergencyContact: '09173333333',
   });
   assert.equal(driver.licenseNo, 'LIC-2');
   assert.equal(driver.licenseExpiry, '2028-10-01');
   assert.equal(driver.address, 'Quezon City');
-  assert.equal(driver.joinDate, '2026-09-01');
+  assert.equal('joinDate' in driver, false, 'join date is no longer kept (spec bms/0017)');
   assert.equal(driver.emergencyName, 'New Contact');
   assert.equal(driver.emergencyContact, '09173333333');
   assert.deepEqual(await service.checkAssignment(vehicleId, driverId, [helperId]), { plateNumber: 'TEST-001' });
@@ -137,8 +137,8 @@ test('crew edits allow a seeded helper to keep or clear optional fields', async 
   deps.prisma.helper.findUnique = async () => ({ id: helperId, userId: helperUser, isActive: true });
   deps.prisma.helper.update = async ({ data }) => { saved = data; };
   const service = new FleetService(deps.prisma, directory(), deps.bookings, provider);
-  await service.updateHelper(helperId, { emergencyName: '', emergencyContact: '', joinDate: '' });
-  for (const field of ['emergencyName', 'emergencyContact', 'joinDate']) assert.equal(saved[field], null);
+  await service.updateHelper(helperId, { emergencyName: '', emergencyContact: '' });
+  for (const field of ['emergencyName', 'emergencyContact']) assert.equal(saved[field], null);
 });
 
 test('BMS fleet contract propagates provider outages instead of hiding them', async () => {
