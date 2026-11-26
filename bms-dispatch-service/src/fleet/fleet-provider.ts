@@ -4,7 +4,7 @@ export type GarageRecord = { id: string; name: string };
 export type VehicleRecord = {
   id: string; plateNumber: string; alias?: string | null; brand?: string | null; model?: string | null;
   type?: string | null; truckTypeId?: string | null; year?: number | null; capacity: string; color?: string | null; fuel?: string | null;
-  status: string; requiredHelpers: number; mileage?: number | null; regExpiry?: unknown; insExpiry?: unknown;
+  status: string; requiredHelpers: number; mileage?: number | null;
   lastMaintenance?: unknown; nextMaintenance?: unknown; driverId?: string | null; garage?: string | null;
   statusReason?: string | null; statusSince?: unknown; expectedBackAt?: unknown; statusRemarks?: string | null;
 };
