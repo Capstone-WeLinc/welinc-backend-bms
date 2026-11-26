@@ -11,7 +11,7 @@ export type VehicleRecord = {
 /** A driver: `userId`, `fullName`, `email` and `contact` come from Auth, the rest from BMS (spec bms/0012). */
 export type DriverRecord = {
   id: string; userId: string; fullName: string; email: string; contact: string; status: string;
-  licenseNo: string; licenseType: string; licenseExpiry?: unknown; joinDate?: unknown;
+  licenseNo: string; licenseType: string; licenseExpiry?: unknown;
   address: string; emergencyName: string; emergencyContact: string;
   vehicleId?: string | null; isVerified?: boolean; updatedAt?: unknown;
 };

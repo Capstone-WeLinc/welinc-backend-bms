@@ -147,7 +147,6 @@ export class VmmsFleetProvider implements FleetProvider {
       licenseNo: d.licenseNumber ?? "",
       licenseType: d.licenseType,
       licenseExpiry: d.licenseExpiry,
-      joinDate: d.joinDate,
       address: d.address ?? "",
       emergencyName: d.emergencyName ?? "",
       emergencyContact: d.emergencyContact ?? "",
@@ -205,7 +204,7 @@ export class VmmsFleetProvider implements FleetProvider {
         data[to] = body[from] === null || body[from] === "" ? null : String(body[from]);
     if (data.crewStatus === null) delete data.crewStatus;
     if (data.licenseType === null) delete data.licenseType;
-    for (const key of ["licenseExpiry", "joinDate"])
+    for (const key of ["licenseExpiry"])
       if (body[key] !== undefined) {
         const raw = body[key];
         const date = raw

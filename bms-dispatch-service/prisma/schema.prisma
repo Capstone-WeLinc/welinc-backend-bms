@@ -88,7 +88,6 @@ model Helper {
   userId String? @unique @map("user_id") @db.Uuid
   id               String   @id @default(uuid()) @db.Uuid
   crewStatus       String   @default("Available") @map("crew_status") @db.VarChar(40)
-  joinDate         DateTime? @map("join_date") @db.Date
   emergencyName    String?  @map("emergency_name") @db.VarChar(160)
   emergencyContact String?  @map("emergency_contact") @db.VarChar(80)
   isActive         Boolean  @default(true) @map("is_active")
@@ -122,7 +121,6 @@ model Driver {
   address String? @db.Text
   emergencyName String? @map("emergency_name") @db.VarChar(160)
   emergencyContact String? @map("emergency_contact") @db.VarChar(80)
-  joinDate DateTime? @map("join_date") @db.Date
   isActive Boolean @default(true) @map("is_active")
   deletedAt DateTime? @map("deleted_at") @db.Timestamptz(6)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
