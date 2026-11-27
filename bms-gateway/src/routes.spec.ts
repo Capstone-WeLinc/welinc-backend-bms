@@ -23,6 +23,13 @@ describe("BMS route ownership", () => {
     expect(route("/bms/crew-leave-x")).toBeNull();
     expect(route("/bms/internal/dispatch/crew-leave")).toBeNull();
   });
+  it("sends the bell to booking and keeps its internal delivery route private (spec bms/0021)", () => {
+    expect(route("/bms/notifications")).toEqual({ owner: "booking", path: "/notifications", public: false });
+    expect(route("/bms/notifications/abc/read")).toEqual({ owner: "booking", path: "/notifications/abc/read", public: false });
+    expect(route("/bms/internal/notifications")).toBeNull();
+    // The old browser-side feeds are gone
+    expect(route("/bms/integrations/welinc/notifications")).toBeNull();
+  });
   it("does not expose auth or internal service routes", () => {
     expect(route("/auth/login")).toBeNull();
     expect(route("/bms/auth/login")).toBeNull();

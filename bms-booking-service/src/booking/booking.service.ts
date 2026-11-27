@@ -6,6 +6,8 @@ import { CustomerNotificationService, type AssignedTeam } from './customer-notif
 import { CreateBookingDto, UpdateBookingDto } from './booking.dto';
 import { verifyTrackingToken } from './tracking-token';
 import { nextBookingNumber } from './booking-number';
+import { NotificationsService } from '../notifications/notifications.service';
+import { cancelledNotices, newBookingNotices, rescheduledNotices } from '../notifications/booking-notices';
 
 function calendarDate(value: string): boolean {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -59,6 +61,7 @@ export class BookingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly customerNotifications: CustomerNotificationService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   list() { return this.prisma.booking.findMany({ orderBy: { createdAt: 'desc' } }); }
@@ -132,6 +135,7 @@ export class BookingService {
       await tx.approvalAuditEvent.create({ data: {
         itemType: 'booking', itemId: booking.id, actorId: actor, action: 'created',
       } });
+      await this.notifications.add(tx, newBookingNotices(booking, actor, false));
       return booking;
     });
     await this.customerNotifications.sendTrackingLink(booking);
@@ -251,6 +255,8 @@ export class BookingService {
         aggregateId: id,
         payload: { bookingUuid: id, bookingNo: saved.bookingNo, type: directCancel ? 'cancel' : 'reschedule', requestedBy: actor, decidedBy: actor, reason: 'Admin direct update', needsUpdate: false } as Prisma.InputJsonValue,
       } });
+      if (directCancel) await this.notifications.add(tx, cancelledNotices(saved, actor));
+      else if (directReschedule) await this.notifications.add(tx, rescheduledNotices(saved, actor));
       return saved;
     });
     const changedDate = updatedBooking.date !== existing.date;

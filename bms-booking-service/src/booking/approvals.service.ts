@@ -6,6 +6,8 @@ import { Prisma } from '@prisma/client';
 import { DirectoryClient } from '../auth/directory.client';
 import { PrismaService } from '../prisma.service';
 import { CustomerNotificationService } from './customer-notification.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { cancelledNotices, changeDecidedNotices, changeSubmittedNotices, rescheduledNotices } from '../notifications/booking-notices';
 
 type ApprovalType = 'booking' | 'collection' | 'refund' | 'crew';
 const APPROVAL_TYPES: string[] = ['booking', 'collection', 'refund', 'crew'];
@@ -48,6 +50,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly customerNotifications: CustomerNotificationService,
     private readonly directory: DirectoryClient,
+    private readonly notifications: NotificationsService,
   ) {}
 
   private async userDetails(ids: string[]) {
@@ -216,6 +219,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
         await tx.approvalAuditEvent.create({ data: {
           itemType: 'booking', itemId: request.id, actorId: actor, action: 'submitted', reason: reason || null,
         } });
+        await this.notifications.add(tx, changeSubmittedNotices(request, booking));
         return request;
       });
     } catch (error) {
@@ -362,7 +366,12 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
       return this.withCompletionNames(result);
     }
     const item = await this.prisma.bookingChangeRequest.findUnique({ where: { id }, include: { booking: true } });
-    if (!item || (admin && item.booking.status === 'Cancelled')) throw new ConflictException('Approval item not found');
+    // A pending request on a cancelled booking is hidden from the queue, so Admin can't open it either.
+    // A decided one stays viewable from History: every approved cancellation leaves its booking Cancelled
+    // (spec bms/0021).
+    if (!item || (admin && item.status === 'Pending' && item.booking.status === 'Cancelled')) {
+      throw new ConflictException('Approval item not found');
+    }
     if (!admin && item.requestedBy !== actor) throw new ForbiddenException('You can only view your own submissions');
     const audit = await this.prisma.approvalAuditEvent.findMany({ where: { itemType: 'booking', itemId: id }, orderBy: { createdAt: 'asc' } });
     const users = await this.userDetails([...audit.map((event) => event.actorId), item.requestedBy, item.decidedBy ?? '']);
@@ -400,6 +409,8 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
         } });
         if (changed.count !== 1) throw new ConflictException('This approval item has already been decided');
         await tx.approvalAuditEvent.create({ data: { itemType: 'booking', itemId: id, actorId: actor, action: 'rejected', reason: reason.trim() } });
+        const decided = await tx.bookingChangeRequest.findUniqueOrThrow({ where: { id }, include: { booking: true } });
+        await this.notifications.add(tx, changeDecidedNotices(decided, decided.booking));
         return tx.bookingChangeRequest.findUniqueOrThrow({ where: { id } });
       });
     }
@@ -423,6 +434,11 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
       const changed = await tx.booking.updateMany({ where: { id: current.id, version: current.version }, data: updateData });
       if (changed.count !== 1) throw new ConflictException('Booking changed since this request; ask CS to submit again');
       await tx.approvalAuditEvent.create({ data: { itemType: 'booking', itemId: id, actorId: actor, action: 'approved', reason: reason.trim() || null } });
+      const decided = await tx.bookingChangeRequest.findUniqueOrThrow({ where: { id }, include: { booking: true } });
+      await this.notifications.add(tx, [
+        ...changeDecidedNotices(decided, decided.booking),
+        ...(request.type === 'cancel' ? cancelledNotices(decided.booking, actor) : rescheduledNotices(decided.booking, actor)),
+      ]);
 
       await tx.approvalOutbox.create({ data: {
         eventType, aggregateId: current.id,
@@ -509,6 +525,7 @@ export class ApprovalsService implements OnModuleInit, OnModuleDestroy {
         decidedBy: null, decidedAt: null, decisionReason: null,
       } });
       await tx.approvalAuditEvent.create({ data: { itemType: 'booking', itemId: id, actorId: actor, action: 'resubmitted', reason: reason || null } });
+      await this.notifications.add(tx, changeSubmittedNotices(updated, current.booking));
       return updated;
     });
   }

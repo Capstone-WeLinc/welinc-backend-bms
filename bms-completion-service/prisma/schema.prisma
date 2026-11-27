@@ -164,3 +164,21 @@ model DemoSeedRecord {
  @@index([datasetKey,bookingUuid], map:"bms_demo_seed_records_dataset_idx")
  @@map("bms_demo_seed_records")
 }
+
+// Notifications for the booking service's bell (spec bms/0021), written in the same transaction as
+// the change they describe and delivered by a timer, with retries while Booking is unreachable.
+model NotificationOutbox {
+  id            String    @id @default(uuid()) @db.Uuid
+  payload       Json
+  // PENDING, DELIVERED, or FAILED (Booking refused the content)
+  status        String    @default("PENDING") @db.VarChar(12)
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lockedUntil   DateTime? @map("locked_until") @db.Timestamptz(6)
+  deliveredAt   DateTime? @map("delivered_at") @db.Timestamptz(6)
+  lastError     String?   @map("last_error") @db.VarChar(1000)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([status, nextAttemptAt])
+  @@map("notification_outbox")
+}

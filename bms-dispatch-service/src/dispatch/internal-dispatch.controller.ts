@@ -2,6 +2,8 @@ import { ConflictException, Controller, Get, Headers, Param, Post, Body, Unautho
 import { timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { DispatchService } from './dispatch.service';
+import { queueNotifications } from '../notifications/notification-outbox';
+import { crewAccounts, tripChangedNotices } from '../notifications/dispatch-notices';
 
 @Controller('internal/dispatch')
 export class InternalDispatchController {
@@ -62,6 +64,15 @@ export class InternalDispatchController {
         await tx.dispatchJobOrder.updateMany({ where: { bookingUuid }, data: { needsUpdate: true, updatedAt: new Date() } });
       }
       if (type === 'reschedule' || type === 'cancel' || eventType === 'BOOKING_CANCEL_APPROVED') {
+        // The crew losing this trip are told (spec bms/0021)
+        const released = await tx.dispatchAssignment.findFirst({ where: { bookingUuid, state: 'CONFIRMED' } });
+        if (released) {
+          await queueNotifications(tx, tripChangedNotices({
+            eventId, bookingUuid, bookingNo: String(body.bookingNo ?? 'Your trip'),
+            cancelled: type === 'cancel' || eventType === 'BOOKING_CANCEL_APPROVED',
+            crew: await crewAccounts(tx, released.driverId, released.helperIds),
+          }));
+        }
         await tx.dispatchAssignment.updateMany({ where: { bookingUuid, state: 'CONFIRMED' }, data: { state: 'REJECTED', lastError: null, updatedAt: new Date() } });
         if (order) await tx.dispatchJobOrder.update({ where: { id: order.id }, data: { state: 'SUPERSEDED', status: type === 'cancel' ? 'Cancelled' : 'Pending', updatedAt: new Date() } });
       }

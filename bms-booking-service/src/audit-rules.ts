@@ -25,6 +25,8 @@ function catalog(segment: string, noun: string): AuditRule[] {
 }
 
 export const AUDIT_RULES: AuditRule[] = [
+  // Reading notifications (spec bms/0021) changes nothing worth an activity log line.
+  { method: 'POST', pattern: /^\/notifications(\/|$)/, label: () => null },
   // Distance lookups while filling in the booking form change nothing.
   { method: 'POST', pattern: /^\/booking\/route$/, label: () => null },
   { method: 'POST', pattern: /^\/booking$/, label: (ctx) => withRef('Created booking', bookingRef(ctx)) },

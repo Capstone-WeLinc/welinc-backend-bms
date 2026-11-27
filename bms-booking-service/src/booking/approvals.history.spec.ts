@@ -59,3 +59,28 @@ describe('Overdue card', () => {
     expect((await service.counts()).overdue).toBe(1);
   });
 });
+
+describe('History details (spec bms/0021)', () => {
+  /** A reschedule or cancellation request, with its booking, as the database returns it. */
+  function withRequest(status: string, bookingStatus: string) {
+    const service = setup();
+    const request = {
+      id: 'req', bookingUuid: 'bk', type: 'cancel', status, reason: 'Moved out', requestedBy: 'cs-1',
+      decidedBy: status === 'Pending' ? null : 'admin-1', payloadBefore: {}, payloadAfter: { status: 'Cancelled' },
+      booking: { id: 'bk', bookingNo: 'BK-9', client: 'Ana', status: bookingStatus },
+    };
+    const prisma = (service as unknown as { prisma: Record<string, unknown> }).prisma;
+    prisma.bookingChangeRequest = { findUnique: async () => request };
+    prisma.approvalAuditEvent = { findMany: async () => [] };
+    return service;
+  }
+
+  it('opens an approved cancellation, whose booking is now Cancelled', async () => {
+    const detail = await withRequest('Approved', 'Cancelled').detail('booking', 'req', 'admin-2', true);
+    expect(detail).toEqual(expect.objectContaining({ id: 'req', status: 'Approved', decidedByName: 'Bernardo Mendoza' }));
+  });
+
+  it('still hides a pending request on a booking that was cancelled another way', async () => {
+    await expect(withRequest('Pending', 'Cancelled').detail('booking', 'req', 'admin-2', true)).rejects.toThrow('Approval item not found');
+  });
+});

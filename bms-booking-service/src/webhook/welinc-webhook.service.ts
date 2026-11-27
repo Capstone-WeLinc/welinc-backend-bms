@@ -5,6 +5,8 @@ import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import { PrismaService } from '../prisma.service';
 import { CustomerNotificationService } from '../booking/customer-notification.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import { cancelledNotices, newBookingNotices, rescheduledNotices, welincBlockedNotices } from '../notifications/booking-notices';
 import { nextBookingNumber } from '../booking/booking-number';
 
 const EVENT_ID = /^[A-Za-z0-9._:-]{1,128}$/;
@@ -478,6 +480,7 @@ export class WelincWebhookService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly customerNotifications: CustomerNotificationService,
+    private readonly notifications: NotificationsService,
   ) {}
 
   async receive(request: RawBodyRequest<Request>) {
@@ -575,6 +578,7 @@ export class WelincWebhookService {
           await tx.welincBookingLink.create({ data: {
             externalBookingId: event.externalBookingId, bookingUuid: booking.id, lastOccurredAt: occurredAt,
           } });
+          await this.notifications.add(tx, newBookingNotices(booking, null, true));
           await record('APPLIED');
           return { accepted: true, duplicate: false, applied: true, pendingReview: false, bookingId: booking.id };
         }
@@ -594,6 +598,7 @@ export class WelincWebhookService {
         if (booking.status === 'Completed' || booking.status === 'Cancelled' ||
           ((material || event.eventType === 'booking.cancelled.v1') && (booking.operationalHold || booking.paymentHold))) {
           await record('BLOCKED', 'booking_final_dispatched_or_paid');
+          await this.notifications.add(tx, welincBlockedNotices(eventId!, booking));
           return { accepted: true, duplicate: false, applied: false, pendingReview: true };
         }
         if (event.eventType === 'booking.cancelled.v1') {
@@ -625,6 +630,9 @@ export class WelincWebhookService {
           } });
         }
         await tx.welincBookingLink.update({ where: { externalBookingId: event.externalBookingId }, data: { lastOccurredAt: occurredAt } });
+        const changed = await tx.booking.findUniqueOrThrow({ where: { id: booking.id } });
+        if (event.eventType === 'booking.cancelled.v1') await this.notifications.add(tx, cancelledNotices(changed, null));
+        else if (material) await this.notifications.add(tx, rescheduledNotices(changed, null));
         await record('APPLIED');
         return { accepted: true, duplicate: false, applied: true, pendingReview: false, bookingId: booking.id };
       });
@@ -654,56 +662,6 @@ export class WelincWebhookService {
     });
     const byExternalId = new Map(links.map((link) => [link.externalBookingId, link.bookingUuid]));
     return events.map((event) => ({ ...event, bookingUuid: byExternalId.get(event.externalBookingId) ?? null }));
-  }
-
-  async importedBookingNotifications() {
-    const events = await this.prisma.welincWebhookEvent.findMany({
-      where: { eventType: 'booking.created.v1', result: 'APPLIED' },
-      orderBy: { receivedAt: 'desc' },
-      take: 100,
-      select: { eventId: true, externalBookingId: true, receivedAt: true },
-    });
-    const deletedEvents = await this.prisma.welincWebhookEvent.findMany({
-      where: { eventType: 'booking.created.v1', result: 'DELETED' },
-      select: { eventId: true },
-    });
-    if (!events.length) return deletedEvents.map((event) => ({ id: event.eventId, deleted: true }));
-    const links = await this.prisma.welincBookingLink.findMany({
-      where: { externalBookingId: { in: events.map((event) => event.externalBookingId) } },
-      select: {
-        externalBookingId: true,
-        booking: { select: { id: true, bookingNo: true, client: true } },
-      },
-    });
-    const byExternalId = new Map(links.map((link) => [link.externalBookingId, link.booking]));
-    const imported = events.flatMap((event) => {
-      const booking = byExternalId.get(event.externalBookingId);
-      return booking ? [{
-        id: event.eventId,
-        externalBookingId: event.externalBookingId,
-        bookingId: booking.id,
-        bookingNo: booking.bookingNo,
-        client: booking.client,
-        receivedAt: event.receivedAt,
-      }] : [];
-    });
-    return [...imported, ...deletedEvents.map((event) => ({ id: event.eventId, deleted: true }))];
-  }
-
-  async deletedBookingNotificationRefs() {
-    const events = await this.prisma.welincWebhookEvent.findMany({
-      where: { eventType: 'booking.created.v1', result: 'DELETED' },
-      select: { payload: true },
-    });
-    const bookingNos = new Set<string>();
-    for (const event of events) {
-      const payload = event.payload as { deletedBookingNos?: unknown } | null;
-      if (!Array.isArray(payload?.deletedBookingNos)) continue;
-      for (const value of payload.deletedBookingNos) {
-        if (typeof value === 'string' && /^BN-[A-Za-z0-9-]{1,50}$/.test(value)) bookingNos.add(value);
-      }
-    }
-    return { bookingNos: [...bookingNos] };
   }
 
   async review(eventId: string, action: unknown, noteInput: unknown, actorId: string) {

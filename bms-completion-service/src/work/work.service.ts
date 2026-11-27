@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { BookingClient, BookingRecord } from '../booking-client.service';
 import { DispatchClient } from '../dispatch-client.service';
+import { queueNotifications } from '../notifications/notification-outbox';
+import { postServiceReadyNotices } from '../notifications/completion-notices';
 
 @Injectable()
 export class WorkService {
@@ -170,7 +172,10 @@ export class WorkService {
         } });
         throw new ServiceUnavailableException('Work completion is pending Booking confirmation; retry');
       }
-      await this.prisma.workOutcome.update({ where: { bookingUuid: booking.id }, data: { status: 'COMPLETED', lastError: null } });
+      await this.prisma.$transaction(async (tx) => {
+        const done = await tx.workOutcome.update({ where: { bookingUuid: booking.id }, data: { status: 'COMPLETED', lastError: null } });
+        await queueNotifications(tx, postServiceReadyNotices({ ...done, bookingUuid: booking.id }));
+      });
     }
     return this.get(booking.id);
   }

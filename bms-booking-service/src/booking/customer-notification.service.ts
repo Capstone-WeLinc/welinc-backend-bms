@@ -1,5 +1,20 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import * as nodemailer from 'nodemailer';
+import { PrismaService } from '../prisma.service';
+
+// The customer email queue (spec bms/0021)
+export const EMAIL_FLUSH_MS = 30_000;
+const EMAIL_LEASE_MS = 2 * 60_000;
+const EMAIL_BATCH = 10;
+export const EMAIL_MAX_ATTEMPTS = 8;
+const EMAIL_KEEP_DAYS = 30;
+const EMAIL_CLEANUP_MS = 6 * 60 * 60_000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 1, 2, 4, 8 … minutes after each failed try, at most an hour. */
+export function retryDelayMs(attempts: number) {
+  return Math.min(60 * 60_000, 60_000 * 2 ** Math.max(0, attempts - 1));
+}
 
 type BookingNotice = {
   id: string;
@@ -75,14 +90,18 @@ const STATUS_UPDATES: Record<string, Omit<EmailContent, 'subject'> & { subjectLi
 };
 
 @Injectable()
-export class CustomerNotificationService {
+export class CustomerNotificationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(CustomerNotificationService.name);
   private readonly transporter: nodemailer.Transporter | null;
   private readonly from = process.env.SMTP_FROM || 'WeLinc Logistics <no-reply@welinc.com>';
   private readonly supportEmail = process.env.CUSTOMER_SUPPORT_EMAIL || '';
   private readonly supportPhone = process.env.CUSTOMER_SUPPORT_PHONE || '';
 
-  constructor() {
+  private timer?: NodeJS.Timeout;
+  private flushing = false;
+  private lastCleanup = 0;
+
+  constructor(private readonly prisma: PrismaService) {
     const host = process.env.SMTP_HOST;
     const port = Number(process.env.SMTP_PORT || 587);
     const user = process.env.SMTP_USER;
@@ -90,6 +109,15 @@ export class CustomerNotificationService {
     this.transporter = host && user && pass
       ? nodemailer.createTransport({ host, port, secure: port === 465, auth: { user, pass } })
       : null;
+  }
+
+  onModuleInit() {
+    this.timer = setInterval(() => void this.flush(), EMAIL_FLUSH_MS);
+    this.timer.unref?.();
+  }
+
+  onModuleDestroy() {
+    if (this.timer) clearInterval(this.timer);
   }
 
   async sendBookingUpdate(booking: BookingNotice, change: 'rescheduled' | 'cancelled' | 'edited', previousDate?: string) {
@@ -153,28 +181,89 @@ export class CustomerNotificationService {
     await this.send(booking, content, 'status update');
   }
 
+  /**
+   * Queues the email (spec bms/0021); the timer sends it and retries a failure with a growing wait.
+   * It is rendered now, so what the customer reads matches the booking at the time of the change.
+   */
   private async send(booking: BookingNotice, content: EmailContent, kind: string) {
     if (!booking.email) {
       this.logger.warn(`Booking ${booking.bookingNo} ${kind}; customer email is missing, so no notification was sent.`);
       return;
     }
+    try {
+      await this.prisma.customerEmail.create({ data: {
+        bookingUuid: UUID.test(booking.id) ? booking.id : null,
+        bookingNo: booking.bookingNo.slice(0, 50), kind: kind.slice(0, 60), recipient: booking.email.slice(0, 255),
+        subject: content.subject.slice(0, 300),
+        textBody: this.renderText(booking, content),
+        htmlBody: this.renderHtml(booking, content),
+      } });
+    } catch (error) {
+      // The booking change already happened; a lost email must not undo or fail it
+      this.logger.error(`Could not queue booking ${kind} email for ${booking.bookingNo}`, error);
+      return;
+    }
+    void this.flush();
+  }
+
+  /** Sends due emails. Each one is leased for a while first, so two replicas never send the same email. */
+  async flush(now = new Date()) {
+    if (this.flushing) return;
+    this.flushing = true;
+    try {
+      const claimed = await this.prisma.$queryRaw<{ id: string }[]>`
+        UPDATE customer_emails SET locked_until = ${new Date(now.getTime() + EMAIL_LEASE_MS)}
+        WHERE id IN (
+          SELECT id FROM customer_emails
+          WHERE status = 'PENDING' AND next_attempt_at <= ${now} AND (locked_until IS NULL OR locked_until < ${now})
+          ORDER BY created_at LIMIT ${EMAIL_BATCH} FOR UPDATE SKIP LOCKED
+        )
+        RETURNING id`;
+      for (const { id } of claimed) await this.deliver(id);
+      if (now.getTime() - this.lastCleanup > EMAIL_CLEANUP_MS) {
+        this.lastCleanup = now.getTime();
+        await this.prisma.customerEmail.deleteMany({ where: {
+          status: { in: ['SENT', 'SKIPPED', 'FAILED'] }, createdAt: { lt: new Date(now.getTime() - EMAIL_KEEP_DAYS * 86_400_000) },
+        } });
+      }
+    } catch (error) {
+      this.logger.warn(`Customer email queue could not be read: ${error instanceof Error ? error.message : 'unknown error'}`);
+    } finally {
+      this.flushing = false;
+    }
+  }
+
+  private async deliver(id: string) {
+    const email = await this.prisma.customerEmail.findUnique({ where: { id } });
+    if (!email || email.status !== 'PENDING') return;
     if (!this.transporter) {
-      this.logger.warn(`Booking ${booking.bookingNo} ${kind}; SMTP is not configured, so no notification was sent.`);
+      await this.prisma.customerEmail.update({ where: { id }, data: { status: 'SKIPPED', lastError: 'SMTP is not configured', lockedUntil: null } });
+      this.logger.warn(`Booking ${email.bookingNo} ${email.kind}; SMTP is not configured, so no notification was sent.`);
       return;
     }
     try {
       await this.transporter.sendMail({
         from: this.from,
-        to: booking.email,
+        to: email.recipient,
         // The sender is a no-reply address, so a customer's Reply goes to support instead of bouncing
         ...(this.supportEmail ? { replyTo: this.supportEmail } : {}),
-        subject: content.subject,
-        text: this.renderText(booking, content),
-        html: this.renderHtml(booking, content),
+        subject: email.subject,
+        text: email.textBody,
+        html: email.htmlBody,
       });
-      this.logger.log(`Booking ${kind} email accepted by SMTP for ${booking.email}`);
+      await this.prisma.customerEmail.update({ where: { id }, data: {
+        status: 'SENT', sentAt: new Date(), attempts: { increment: 1 }, lastError: null, lockedUntil: null,
+      } });
+      this.logger.log(`Booking ${email.kind} email accepted by SMTP for ${email.recipient}`);
     } catch (error) {
-      this.logger.error(`Could not send booking ${kind} email for ${booking.bookingNo}`, error);
+      const attempts = email.attempts + 1;
+      const giveUp = attempts >= EMAIL_MAX_ATTEMPTS;
+      await this.prisma.customerEmail.update({ where: { id }, data: {
+        attempts, status: giveUp ? 'FAILED' : 'PENDING', lockedUntil: null,
+        nextAttemptAt: new Date(Date.now() + retryDelayMs(attempts)),
+        lastError: (error instanceof Error ? error.message : 'Unknown SMTP error').slice(0, 1000),
+      } });
+      this.logger.error(`Could not send booking ${email.kind} email for ${email.bookingNo} (attempt ${attempts}${giveUp ? ', giving up' : ''})`, error);
     }
   }
 

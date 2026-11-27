@@ -2,6 +2,8 @@ import { BadRequestException, ConflictException, ForbiddenException, Injectable,
 import { PrismaService } from '../prisma.service';
 import { BookingClient } from '../booking-client.service';
 import { DirectoryClient } from '../auth/directory.client';
+import { queueNotifications } from '../notifications/notification-outbox';
+import { conflictNotices, leaveDecidedNotices, leaveFiledNotices } from '../notifications/dispatch-notices';
 
 /**
  * Crew leave and emergency requests (specs bms/0003, bms/0005).
@@ -111,7 +113,7 @@ export class CrewLeaveService {
     const crewType = person.type;
     const crewId = person.id;
 
-    return this.prisma.$transaction(async (tx) => {
+    const filed = await this.prisma.$transaction(async (tx) => {
       // One filer at a time per person, so two overlapping requests can't both pass the check.
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`crew-leave:${crewId}`}, 0))`;
       const overlap = await tx.crewLeaveRequest.findFirst({ where: {
@@ -125,8 +127,23 @@ export class CrewLeaveService {
         startDate, endDate, reason, requestedBy: actor,
       } });
       await tx.crewLeaveEvent.create({ data: { requestId: created.id, actorId: actor, action: 'filed', reason } });
+      await queueNotifications(tx, leaveFiledNotices(created));
       return created;
     });
+    // An emergency is in effect at once, so trips it clashes with need a new crew member now
+    if (filed.kind === 'EMERGENCY') await this.notifyConflicts(filed.id);
+    return filed;
+  }
+
+  /**
+   * Tells Operations about trips this request leaves a crew member on (spec bms/0021). Runs after the
+   * request is saved, since it reads booking numbers; a failure only skips the alert, and the
+   * Scheduling page still shows the conflict.
+   */
+  private async notifyConflicts(requestId: string) {
+    try {
+      await queueNotifications(this.prisma, conflictNotices(await this.conflicts(requestId)));
+    } catch { /* The conflict list on Scheduling still shows it */ }
   }
 
   /** The signed-in crew member's own requests, newest first. */
@@ -285,7 +302,12 @@ export class CrewLeaveService {
       if (changed.count !== 1) throw new ConflictException('This approval item has already been decided');
       const action = decision === 'reject' ? 'rejected' : current.kind === 'EMERGENCY' ? 'confirmed' : 'approved';
       await tx.crewLeaveEvent.create({ data: { requestId: id, actorId: actor, action, reason: note || null } });
-      return tx.crewLeaveRequest.findUniqueOrThrow({ where: { id } });
+      const decided = await tx.crewLeaveRequest.findUniqueOrThrow({ where: { id } });
+      await queueNotifications(tx, leaveDecidedNotices(decided));
+      return decided;
+    }).then(async (decided) => {
+      if (decided.status === 'Approved') await this.notifyConflicts(id);
+      return decided;
     });
   }
 }

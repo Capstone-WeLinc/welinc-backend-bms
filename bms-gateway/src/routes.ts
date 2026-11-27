@@ -5,7 +5,7 @@ export function route(
   if (!path.startsWith("/bms/")) return null;
   const local = path.slice(4);
   if (
-    /^\/integrations\/(welinc|wix)\/(bookings|review|notifications)(\/|$)/.test(
+    /^\/integrations\/(welinc|wix)\/(bookings|review)(\/|$)/.test(
       local,
     )
   ) {
@@ -29,7 +29,8 @@ export function route(
     )
   )
     return { owner: "dispatch", path, public: false };
-  if (/^\/(booking|approvals)(\/|$)/.test(local))
+  // The bell (spec bms/0021); booking owns the notifications
+  if (/^\/(booking|approvals|notifications)(\/|$)/.test(local))
     return { owner: "booking", path: local, public: false };
   if (/^\/(dispatch|scheduling|job-order|crew-leave)(\/|$)/.test(local))
     return { owner: "dispatch", path: local, public: false };
