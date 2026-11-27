@@ -44,6 +44,10 @@ function table(rows: Row[], defaults: () => Row = () => ({})) {
       hit.forEach((r) => Object.assign(r, data));
       return { count: hit.length };
     },
+    createMany: async ({ data }: any) => {
+      for (const item of data) rows.push({ id: randomUUID(), createdAt: new Date(), ...defaults(), ...item });
+      return { count: data.length };
+    },
   };
 }
 
@@ -56,6 +60,7 @@ function setup() {
     refundRequest: table([], () => ({ status: 'Requested', requestedAt: new Date(), decisionReason: null })),
     approvalAuditEvent: table([]),
     dailySubmission: table([]),
+    notificationOutbox: table([]),
     $executeRaw: async () => 0,
   };
   prisma.$transaction = async (fn: (tx: any) => any) => fn(prisma);
@@ -160,6 +165,21 @@ describe('Refunds', () => {
       expect(rejected.status).toBe('Rejected');
       expect(rejected.decisionReason).toBe('No proof');
       expect(t.prisma.refund.rows).toHaveLength(0);
+    });
+
+    it('tells Admin about the request and the requester about the decision (spec bms/0021)', async () => {
+      const t = setup();
+      const c = t.addVerifiedCollection();
+      const req = await t.service.requestRefund(c.id, { amount: '100', reason: 'Damaged item' }, CS);
+      await t.service.decideApproval('refund', req.id, ADMIN, 'reject', 'No proof');
+      const [submitted, decided] = t.prisma.notificationOutbox.rows.map((row: Row) => row.payload);
+      expect(submitted).toEqual(expect.objectContaining({
+        role: 'ADMIN', actorId: CS, kind: 'approval.submitted', title: 'Refund needs review', href: '/admin/approvals?type=refund',
+      }));
+      expect(decided).toEqual(expect.objectContaining({
+        userId: CS, actorId: ADMIN, kind: 'approval.decided', title: 'Your refund request was rejected', href: '/cs/my-submissions',
+      }));
+      expect(decided.message).toContain('No proof');
     });
 
     it('approving a full refund marks it Refunded and releases the booking payment hold', async () => {

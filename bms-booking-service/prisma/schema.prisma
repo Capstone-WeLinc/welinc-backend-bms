@@ -50,6 +50,7 @@ model Booking {
   updatedAt                 DateTime @updatedAt @map("updated_at") @db.Timestamptz(6)
   welincLink                WelincBookingLink?
   changeRequests            BookingChangeRequest[]
+  notifications             Notification[]
 
   @@index([createdAt])
   @@map("bookings")
@@ -221,6 +222,68 @@ model ProtectiveMaterial {
 
   @@index([isActive])
   @@map("protective_materials_catalog")
+}
+
+// In-app notifications (spec bms/0021). Each row is for one role (everyone holding it) or one
+// person. Dispatch and Completion deliver theirs through /internal/notifications; dedupeKey makes a
+// repeated delivery a no-op.
+model Notification {
+  id              String    @id @default(uuid()) @db.Uuid
+  dedupeKey       String    @unique @map("dedupe_key") @db.VarChar(200)
+  recipientRole   String?   @map("recipient_role") @db.VarChar(40)
+  recipientUserId String?   @map("recipient_user_id") @db.Uuid
+  // Who caused it; they don't see their own notification
+  actorId         String?   @map("actor_id") @db.Uuid
+  kind            String    @db.VarChar(60)
+  title           String    @db.VarChar(200)
+  message         String    @db.VarChar(500)
+  href            String?   @db.VarChar(300)
+  // Removed with its booking (a deleted WeLinc import), so the bell never points at a booking that's gone
+  bookingUuid     String?   @map("booking_uuid") @db.Uuid
+  booking         Booking?  @relation(fields: [bookingUuid], references: [id], onDelete: Cascade)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  reads           NotificationRead[]
+
+  @@index([recipientRole, createdAt])
+  @@index([recipientUserId, createdAt])
+  @@index([createdAt])
+  @@map("notifications")
+}
+
+// Who has read which notification, so read state follows the person across browsers.
+model NotificationRead {
+  notificationId String       @map("notification_id") @db.Uuid
+  userId         String       @map("user_id") @db.Uuid
+  readAt         DateTime     @default(now()) @map("read_at") @db.Timestamptz(6)
+  notification   Notification @relation(fields: [notificationId], references: [id], onDelete: Cascade)
+
+  @@id([notificationId, userId])
+  @@index([userId])
+  @@map("notification_reads")
+}
+
+// Customer emails wait here and are sent by a timer, retried with a growing wait on failure
+// (spec bms/0021). The content is rendered when queued, so a later edit can't change what was said.
+model CustomerEmail {
+  id            String    @id @default(uuid()) @db.Uuid
+  bookingUuid   String?   @map("booking_uuid") @db.Uuid
+  bookingNo     String    @map("booking_no") @db.VarChar(50)
+  kind          String    @db.VarChar(60)
+  recipient     String    @db.VarChar(255)
+  subject       String    @db.VarChar(300)
+  textBody      String    @map("text_body")
+  htmlBody      String    @map("html_body")
+  // PENDING, SENT, FAILED (gave up) or SKIPPED (SMTP not configured)
+  status        String    @default("PENDING") @db.VarChar(12)
+  attempts      Int       @default(0)
+  nextAttemptAt DateTime  @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  lockedUntil   DateTime? @map("locked_until") @db.Timestamptz(6)
+  lastError     String?   @map("last_error") @db.VarChar(1000)
+  sentAt        DateTime? @map("sent_at") @db.Timestamptz(6)
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([status, nextAttemptAt])
+  @@map("customer_emails")
 }
 
 // CLI-only metadata keeps demo dates and VMMS resource ids stable across reruns.

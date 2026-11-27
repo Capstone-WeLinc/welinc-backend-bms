@@ -5,6 +5,8 @@ import { PrismaService } from '../prisma.service';
 import { BookingClient, BookingRecord } from '../booking-client.service';
 import { FleetService } from '../fleet/fleet.service';
 import { checkBookingTiming, worstTiming, type TimedBooking, type TimingResult } from './assignment-timing';
+import { queueNotifications } from '../notifications/notification-outbox';
+import { assignedNotices, crewAccounts, distributedNotices } from '../notifications/dispatch-notices';
 
 const TRAVEL_CACHE_MS = 6 * 60 * 60 * 1000;
 
@@ -333,6 +335,8 @@ export class DispatchService {
     const jobOrderTruck = vehicle.plateNumber ?? 'Subcon';
     const jobOrderTeam = (assignedDriverName ?? (helperNames.join(', ') || 'Subcon')).slice(0, 100);
     let assignment = await this.prisma.dispatchAssignment.findUnique({ where: { bookingUuid: id } });
+    // A reassignment: whoever drops off this trip is told (spec bms/0021)
+    const previousCrew = assignment?.state === 'CONFIRMED' ? { driverId: assignment.driverId, helperIds: assignment.helperIds } : null;
     if (!assignment && (!['For Plotting', 'Rescheduled'].includes(booking.status) || booking.operationalHold || booking.paymentHold)) {
       throw new ConflictException('Booking is no longer ready for assignment');
     }
@@ -415,7 +419,7 @@ export class DispatchService {
       if (current.state !== 'CONFIRMED') {
         await tx.dispatchAssignment.update({ where: { id }, data: { state: 'CONFIRMED', lastError: null } });
         const [{ value }] = await tx.$queryRaw<Array<{ value: bigint }>>`SELECT nextval('dispatch_job_order_no_seq') AS value`;
-        await tx.dispatchJobOrder.upsert({ where: { bookingUuid: id },
+        const order = await tx.dispatchJobOrder.upsert({ where: { bookingUuid: id },
           create: {
             id, bookingUuid: id, bookingIdAlias: booking.bookingId,
             jobOrderNo: `JO-${new Date().getFullYear()}-${String(value).padStart(4, '0')}`,
@@ -427,6 +431,16 @@ export class DispatchService {
           update: { client: booking.client, serviceDate: booking.date, truck: jobOrderTruck,
             team: jobOrderTeam, status: 'Pending', state: 'ACTIVE', updatedAt: new Date() },
         });
+        const crew = await crewAccounts(tx, current.driverId, current.helperIds);
+        const kept = new Set(crew.map((member) => member.userId));
+        const removed = previousCrew
+          ? (await crewAccounts(tx, previousCrew.driverId, previousCrew.helperIds)).filter((member) => !kept.has(member.userId))
+          : [];
+        await queueNotifications(tx, assignedNotices({
+          booking: { bookingUuid: id, bookingNo: booking.bookingNo, client: booking.client, date: booking.date },
+          jobOrderNo: order.jobOrderNo, dispatchTime: current.dispatchTime, commandId: current.confirmCommandId ?? current.id,
+          actorId: actor ?? null, crew, removed,
+        }));
       }
     });
     return this.schedule(id);
@@ -522,7 +536,17 @@ export class DispatchService {
       throw new ConflictException('A driver and at least one helper must be assigned before a job order can be distributed');
     }
     const alreadyDistributed = item.status === 'Distributed';
-    const updated = await this.prisma.dispatchJobOrder.update({ where: { id }, data: { status: 'Distributed', updatedAt: new Date() } });
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const saved = await tx.dispatchJobOrder.update({ where: { id }, data: { status: 'Distributed', updatedAt: new Date() } });
+      if (!alreadyDistributed) {
+        await queueNotifications(tx, distributedNotices({
+          booking: { bookingUuid: item.bookingUuid, bookingNo: booking.bookingNo, client: booking.client, date: booking.date },
+          jobOrderNo: saved.jobOrderNo, dispatchTime: assignment.dispatchTime, commandId: assignment.confirmCommandId ?? assignment.id,
+          crew: await crewAccounts(tx, assignment.driverId, assignment.helperIds),
+        }));
+      }
+      return saved;
+    });
     if (!alreadyDistributed) {
       const key = process.env.BMS_INTERNAL_SERVICE_KEY;
       const root = process.env.BOOKING_API_URL || 'http://127.0.0.1:3021';

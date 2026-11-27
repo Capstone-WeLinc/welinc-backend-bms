@@ -13,10 +13,11 @@ import { WorkController } from './work/work.controller';
 import { WorkService } from './work/work.service';
 import { AuditController, AuditProvider } from './audit';
 import { InternalCompletionController } from './internal-completion.controller';
+import { NotificationOutbox } from './notifications/notification-outbox';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }), BmsAuthModule],
   controllers: [HealthController, CollectionsController, WorkController, AuditController, InternalCompletionController],
-  providers: [PrismaService, CompletionAuthGuard, BookingClient, DispatchClient, CollectionsService, WorkService, AuditProvider],
+  providers: [PrismaService, NotificationOutbox, CompletionAuthGuard, BookingClient, DispatchClient, CollectionsService, WorkService, AuditProvider],
 })
 export class AppModule {}

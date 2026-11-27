@@ -18,10 +18,12 @@ import { CatalogService } from './catalog/catalog.service';
 import { WelincWebhookController } from './webhook/welinc-webhook.controller';
 import { WelincWebhookService } from './webhook/welinc-webhook.service';
 import { AuditController, AuditProvider } from './audit';
+import { InternalNotificationsController, NotificationsController } from './notifications/notifications.controller';
+import { NotificationsService } from './notifications/notifications.service';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: raw => validateEnv({ ...raw, BMS_BOOKING_HOST: 'true' }) }), BmsAuthModule],
-  controllers: [HealthController, BookingController, ApprovalsController, InternalBookingController, PublicTrackingController, CatalogController, WelincWebhookController, AuditController],
-  providers: [PrismaService, BookingAuthGuard, BookingService, ApprovalsService, CustomerNotificationService, BookingRouteService, CatalogService, WelincWebhookService, AuditProvider],
+  controllers: [HealthController, BookingController, ApprovalsController, InternalBookingController, PublicTrackingController, CatalogController, WelincWebhookController, AuditController, NotificationsController, InternalNotificationsController],
+  providers: [PrismaService, BookingAuthGuard, BookingService, ApprovalsService, CustomerNotificationService, BookingRouteService, CatalogService, WelincWebhookService, NotificationsService, AuditProvider],
 })
 export class AppModule {}

@@ -22,16 +22,6 @@ export class WelincWebhookController {
   @BmsRoles('ADMIN')
   pendingReview() { return this.webhook.pendingReview(); }
 
-  @Get(['welinc/notifications', 'wix/notifications'])
-  @UseGuards(BookingAuthGuard)
-  @BmsRoles('ADMIN')
-  importedBookingNotifications() { return this.webhook.importedBookingNotifications(); }
-
-  @Get(['welinc/notifications/deleted', 'wix/notifications/deleted'])
-  @UseGuards(BookingAuthGuard)
-  @BmsRoles('ADMIN', 'CUSTOMER_SUPPORT', 'OPERATIONS')
-  deletedBookingNotificationRefs() { return this.webhook.deletedBookingNotificationRefs(); }
-
   @Post(['welinc/review/:eventId', 'wix/review/:eventId'])
   @UseGuards(BookingAuthGuard)
   @BmsRoles('ADMIN')

@@ -34,6 +34,7 @@ function table(rows: Row[], defaults: () => Row = () => ({})) {
     findUniqueOrThrow: async ({ where }: any) => { const row = find(where); if (!row) throw new Error('not found'); return row; },
     findMany: async ({ where }: any = {}) => rows.filter((r) => matches(r, where)),
     create: async ({ data }: any) => { const row = { id: randomUUID(), ...defaults(), ...data }; rows.push(row); return row; },
+    createMany: async ({ data }: any) => { for (const item of data) rows.push({ id: randomUUID(), ...defaults(), ...item }); return { count: data.length }; },
     updateMany: async ({ where, data }: any) => {
       const hit = rows.filter((r) => matches(r, where)); hit.forEach((r) => Object.assign(r, data)); return { count: hit.length };
     },
@@ -57,6 +58,7 @@ function setup() {
     crewLeaveRequest: table([], () => ({ status: 'Requested', requestedAt: new Date(), decidedBy: null, decidedAt: null, decisionReason: null })),
     crewLeaveEvent: table([], () => ({ createdAt: new Date() })),
     dispatchAssignment: table([]),
+    notificationOutbox: table([]),
     $executeRaw: async () => 0,
   };
   db.$transaction = async (fn: (tx: any) => any) => fn(db);
@@ -66,6 +68,9 @@ function setup() {
   const directory: any = { lookup: async (ids: string[]) => new Map(ids.flatMap((id) => (people.has(id) ? [[id, people.get(id)]] : []))) };
   return new CrewLeaveService(db, bookings, directory);
 }
+
+/** The notifications queued for the bell (spec bms/0021). */
+const queued = () => db.notificationOutbox.rows.map((row: Row) => row.payload);
 
 const leave = (extra: Row = {}) => ({ kind: 'LEAVE', startDate: plus(1), endDate: plus(2), reason: 'Family event', ...extra });
 const emergency = (reason = 'Sick') => ({ kind: 'EMERGENCY', reason });
@@ -285,6 +290,31 @@ describe('Crew leave', () => {
       await s.decide(a.id, ADMIN, 'approve');
       expect((await s.active()).map((x) => x.crewId)).toEqual([DRIVER]);
       expect(await s.active(plus(3))).toEqual([]);
+    });
+  });
+
+  describe('Notifications (spec bms/0021)', () => {
+    it('tells Admin about a filed request, and the crew member about the decision', async () => {
+      const s = setup();
+      const filed = await s.fileSelf(leave(), DRIVER_USER);
+      expect(queued()).toEqual([expect.objectContaining({
+        role: 'ADMIN', kind: 'approval.submitted', title: 'Leave request needs review', actorId: DRIVER_USER, href: '/admin/approvals?type=crew',
+      })]);
+      await s.decide(filed.id, ADMIN, 'reject', 'Short on drivers');
+      expect(queued()[1]).toEqual(expect.objectContaining({
+        userId: DRIVER_USER, actorId: ADMIN, kind: 'approval.decided', title: 'Your leave was rejected',
+      }));
+      expect(queued()[1].message).toContain('Short on drivers');
+    });
+
+    it('tells Operations when an emergency leaves a crew member on a trip that day', async () => {
+      const s = setup();
+      const booking = randomUUID();
+      db.dispatchAssignment.rows.push({ bookingUuid: booking, serviceDate: today, dispatchTime: '08:00', state: 'CONFIRMED', driverId: null, helperIds: [HELPER] });
+      await s.fileSelf(emergency(), HELPER_USER);
+      const conflict = queued().find((item: Row) => item.kind === 'crew.conflict');
+      expect(conflict).toEqual(expect.objectContaining({ role: 'OPERATIONS', bookingUuid: booking, href: '/operations/scheduling' }));
+      expect(conflict.message).toContain('Mark Anthony is on emergency leave');
     });
   });
 });

@@ -4,6 +4,8 @@ import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma.service';
 import { BookingClient } from '../booking-client.service';
 import { DispatchClient } from '../dispatch-client.service';
+import { queueNotifications } from '../notifications/notification-outbox';
+import { collectionDecidedNotices, collectionSubmittedNotices, refundDecidedNotices, refundSubmittedNotices } from '../notifications/completion-notices';
 
 const METHODS = ['Cash', 'BDO', 'GCash', 'Xendit'];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -117,6 +119,7 @@ export class CollectionsService {
           businessDate: manilaDate(collectedAt), recordedBy: actor,
         } });
         await tx.approvalAuditEvent.create({ data: { itemType: 'collection', itemId: collection.id, actorId: actor, action: 'submitted' } });
+        await queueNotifications(tx, collectionSubmittedNotices(collection));
         return collection;
       });
     } catch (error) {
@@ -270,6 +273,7 @@ export class CollectionsService {
         clientName: collection.clientName, amount: value, reason, requestedBy: actor,
       } });
       await tx.approvalAuditEvent.create({ data: { itemType: 'refund', itemId: request.id, actorId: actor, action: 'submitted', reason } });
+      await queueNotifications(tx, refundSubmittedNotices(request));
       return request;
     });
   }
@@ -362,7 +366,9 @@ export class CollectionsService {
         const changed = await tx.collection.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'REJECTED', rejectedBy: actor, rejectedAt: new Date(), decisionReason: reason.trim() } });
         if (changed.count !== 1) throw new ConflictException('This approval item has already been decided');
         await tx.approvalAuditEvent.create({ data: { itemType: type, itemId: id, actorId: actor, action: 'rejected', reason: reason.trim() } });
-        return tx.collection.findUniqueOrThrow({ where: { id } });
+        const rejected = await tx.collection.findUniqueOrThrow({ where: { id } });
+        await queueNotifications(tx, collectionDecidedNotices(rejected));
+        return rejected;
       });
     }
     const request = await this.prisma.refundRequest.findUnique({ where: { id } });
@@ -372,7 +378,9 @@ export class CollectionsService {
       const changed = await tx.refundRequest.updateMany({ where: { id, status: 'Requested' }, data: { status: 'Rejected', decidedBy: actor, decidedAt: new Date(), decisionReason: reason.trim() } });
       if (changed.count !== 1) throw new ConflictException('This approval item has already been decided');
       await tx.approvalAuditEvent.create({ data: { itemType: type, itemId: id, actorId: actor, action: 'rejected', reason: reason.trim() } });
-      return tx.refundRequest.findUniqueOrThrow({ where: { id } });
+      const rejected = await tx.refundRequest.findUniqueOrThrow({ where: { id } });
+      await queueNotifications(tx, refundDecidedNotices(rejected));
+      return rejected;
     });
     const collection = await this.prisma.collection.findUnique({ where: { id: request.collectionId } });
     if (!collection || collection.status !== 'VERIFIED') throw new ConflictException('The linked collection is no longer verified');
@@ -402,6 +410,7 @@ export class CollectionsService {
       } });
       if (changed.count !== 1) throw new ConflictException('This approval item has already been decided');
       await tx.approvalAuditEvent.create({ data: { itemType: type, itemId: id, actorId: actor, action: 'approved' } });
+      await queueNotifications(tx, refundDecidedNotices(await tx.refundRequest.findUniqueOrThrow({ where: { id } })));
       return refund;
     });
     const refund = await this.syncRefund(created);
@@ -430,7 +439,9 @@ export class CollectionsService {
         } });
         if (changed.count !== 1) throw new ConflictException('Only rejected submissions can be resubmitted');
         await tx.approvalAuditEvent.create({ data: { itemType: type, itemId: id, actorId: actor, action: 'resubmitted' } });
-        return tx.collection.findUniqueOrThrow({ where: { id } });
+        const resubmitted = await tx.collection.findUniqueOrThrow({ where: { id } });
+        await queueNotifications(tx, collectionSubmittedNotices(resubmitted));
+        return resubmitted;
       });
     }
     const current = await this.prisma.refundRequest.findUnique({ where: { id } });
@@ -446,7 +457,9 @@ export class CollectionsService {
         } });
         if (changed.count !== 1) throw new ConflictException('Only rejected submissions can be resubmitted');
         await tx.approvalAuditEvent.create({ data: { itemType: type, itemId: id, actorId: actor, action: 'resubmitted', reason } });
-        return tx.refundRequest.findUniqueOrThrow({ where: { id } });
+        const resubmitted = await tx.refundRequest.findUniqueOrThrow({ where: { id } });
+        await queueNotifications(tx, refundSubmittedNotices(resubmitted));
+        return resubmitted;
       });
     }
     return this.prisma.$transaction(async (tx) => {
@@ -522,7 +535,9 @@ export class CollectionsService {
       const changed = await tx.collection.updateMany({ where: { id, status: 'VERIFYING' }, data: { status: 'VERIFIED', projectionError: null } });
       if (changed.count !== 1) throw new ConflictException('This collection has already been decided');
       await tx.approvalAuditEvent.create({ data: { itemType: 'collection', itemId: id, actorId: actor, action: 'verified' } });
-      return tx.collection.findUniqueOrThrow({ where: { id } });
+      const verified = await tx.collection.findUniqueOrThrow({ where: { id } });
+      await queueNotifications(tx, collectionDecidedNotices(verified));
+      return verified;
     });
   }
 
@@ -536,7 +551,9 @@ export class CollectionsService {
       const changed = await tx.collection.updateMany({ where: { id, status: 'PENDING' }, data: { status: 'REJECTED', rejectedBy: actor, rejectedAt: new Date(), decisionReason } });
       if (changed.count !== 1) throw new ConflictException('Collection has already been decided');
       await tx.approvalAuditEvent.create({ data: { itemType: 'collection', itemId: id, actorId: actor, action: 'rejected', reason: decisionReason } });
-      return tx.collection.findUniqueOrThrow({ where: { id } });
+      const rejected = await tx.collection.findUniqueOrThrow({ where: { id } });
+      await queueNotifications(tx, collectionDecidedNotices(rejected));
+      return rejected;
     });
   }
 
