@@ -1,10 +1,38 @@
-import { BadRequestException, ConflictException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { BookingClient, BookingRecord } from '../booking-client.service';
 import { DispatchClient } from '../dispatch-client.service';
 import { queueNotifications } from '../notifications/notification-outbox';
 import { postServiceReadyNotices } from '../notifications/completion-notices';
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The mobile app's payment choices, as the web's Daily Sales names them (spec bms/0022). */
+const REPORTED_PAYMENT: Record<string, string> = { CASH: 'Cash', BANK_TRANSFER: 'BDO', GCASH: 'GCash', XENDIT: 'Xendit' };
+const REPORTED_ADD_ON_PAYMENT: Record<string, string> = { ...REPORTED_PAYMENT, COD: 'Cash', UNPAID: 'Unpaid' };
+
+/** What a driver's form adds to a save, besides the shared post-service fields. */
+type TeamSubmission = {
+  baseVersion: string | null; submittedAt: Date | null;
+  reportedPaymentMethod: string | null; reportedAddOnPayment: string | null;
+};
+
+/**
+ * Who is saving. `web`: Customer Support or Admin on the Post-Service page. `team`: the assigned
+ * driver from the mobile app. `retry`: Admin re-sending a stuck completion; it changes no owner.
+ */
+type SaveSource = { kind: 'web' } | { kind: 'retry' } | { kind: 'team'; submission: TeamSubmission };
+
+const changedByOffice = (current: unknown) => new ConflictException({
+  code: 'POST_SERVICE_CHANGED', message: 'The office updated this record. Check it and submit again if needed.', current,
+});
+
+function optionalText(value: unknown, name: string, max: number): string | null {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string' || value.length > max) throw new BadRequestException(`Invalid ${name}`);
+  return value.trim() || null;
+}
 
 @Injectable()
 export class WorkService {
@@ -96,17 +124,100 @@ export class WorkService {
     const outcome = await this.prisma.workOutcome.findUnique({ where: { bookingUuid: id } });
     if (!outcome) throw new NotFoundException('Work outcome not found');
     if (outcome.status !== 'PENDING') throw new ConflictException('Only pending work confirmation can be retried');
-    return this.upsert(id, {
+    return this.save(id, {
       status: 'Completed', postServiceStatus: outcome.postServiceStatus, arrivalTime: outcome.arrivalTime,
       additionalMaterials: outcome.additionalMaterials, issueReported: outcome.issueReported,
       issueDetails: outcome.issueDetails, completionNotes: outcome.completionNotes,
-    }, actor);
+    }, actor, { kind: 'retry' });
   }
 
   async upsert(id: string, input: Record<string, unknown>, actor: string) {
     if (['paymentStatus', 'paymentMethod', 'amountPaid'].some((field) => input[field] !== undefined)) {
       throw new BadRequestException('Work completion cannot record a payment; use Collections');
     }
+    return this.save(id, input, actor, { kind: 'web' });
+  }
+
+  /**
+   * The post-service state of every booking this driver is assigned to, for the mobile app: whether a
+   * form was sent, whether the office finalized it, and its `version` (spec bms/0022).
+   */
+  async teamStatus(actor: string) {
+    const bookingUuids = await this.dispatch.driverBookingUuids(actor);
+    const outcomes = bookingUuids.length
+      ? await this.prisma.workOutcome.findMany({ where: { bookingUuid: { in: bookingUuids } } })
+      : [];
+    const byBooking = new Map(outcomes.map((item) => [item.bookingUuid, item]));
+    return {
+      items: bookingUuids.map((bookingUuid) => {
+        const outcome = byBooking.get(bookingUuid);
+        return {
+          bookingUuid,
+          submitted: !!outcome && outcome.status !== 'DRAFT',
+          finalized: outcome?.postServiceStatus === 'Finalized',
+          version: outcome?.updatedAt.toISOString() ?? null,
+        };
+      }),
+    };
+  }
+
+  /** The record as the driver's app sees it: the web's view, the driver's report, the lock and the version. */
+  private async teamView(booking: BookingRecord) {
+    const [base, outcome] = await Promise.all([
+      this.format(booking),
+      this.prisma.workOutcome.findUnique({ where: { bookingUuid: booking.id } }),
+    ]);
+    return {
+      ...base, bookingUuid: booking.id,
+      reportedPaymentMethod: outcome?.reportedPaymentMethod ?? null,
+      reportedAddOnPayment: outcome?.reportedAddOnPayment ?? null,
+      submittedAt: outcome?.submittedAt?.toISOString() ?? null,
+      postServiceLocked: outcome?.postServiceStatus === 'Finalized',
+      version: outcome?.updatedAt.toISOString() ?? null,
+    };
+  }
+
+  /**
+   * A driver's post-service form from the mobile app (spec bms/0022). Only the assigned driver may
+   * send it. It never makes the driver the finalizer, and it is refused when the office finalized
+   * the record or changed it after the copy the phone was editing.
+   */
+  async submitFromTeam(bookingUuid: string, body: Record<string, unknown>, actor: string) {
+    if (!UUID.test(bookingUuid)) throw new BadRequestException('Invalid booking ID');
+    if (!(await this.dispatch.driverBookingUuids(actor)).includes(bookingUuid)) {
+      throw new ForbiddenException("This job order isn't assigned to you as driver");
+    }
+    const addOns = body.addOns ?? [];
+    if (!Array.isArray(addOns) || addOns.length > 50 || addOns.some((item) => typeof item !== 'string' || !item.trim() || item.length > 150)) {
+      throw new BadRequestException('Invalid add-ons');
+    }
+    if (body.serviceCompleted !== undefined && typeof body.serviceCompleted !== 'boolean' ||
+      body.issueReported !== undefined && typeof body.issueReported !== 'boolean') {
+      throw new BadRequestException('Invalid work completion details');
+    }
+    const paymentMethod = body.paymentMethod == null ? null : REPORTED_PAYMENT[String(body.paymentMethod)];
+    const addOnPayment = body.addOnPayment == null ? null : REPORTED_ADD_ON_PAYMENT[String(body.addOnPayment)];
+    if (paymentMethod === undefined || addOnPayment === undefined) throw new BadRequestException('Invalid payment method');
+    const submittedAt = body.submittedAt == null ? null : new Date(String(body.submittedAt));
+    if (submittedAt && !Number.isFinite(submittedAt.getTime())) throw new BadRequestException('Invalid submission time');
+    if (body.baseVersion != null && typeof body.baseVersion !== 'string') throw new BadRequestException('Invalid version');
+    const issueReported = body.issueReported === true;
+    const done = body.serviceCompleted === true || issueReported;
+    return this.save(bookingUuid, {
+      ...(done && { status: 'Completed' }),
+      postServiceStatus: done ? 'Completed' : 'Pending Review',
+      arrivalTime: optionalText(body.arrivalTime, 'arrival time', 20),
+      additionalMaterials: (addOns as string[]).map((item) => item.trim()),
+      completionNotes: optionalText(body.completionNotes, 'completion notes', 5000),
+      issueReported,
+      issueDetails: optionalText(body.issueDetails, 'issue details', 5000),
+    }, actor, { kind: 'team', submission: {
+      baseVersion: (body.baseVersion as string | null | undefined) ?? null, submittedAt,
+      reportedPaymentMethod: paymentMethod, reportedAddOnPayment: addOnPayment,
+    } });
+  }
+
+  private async save(id: string, input: Record<string, unknown>, actor: string, source: SaveSource) {
     const booking = await this.bookings.resolve(id);
     this.ensureNotCancelled(booking);
     await this.ensurePostServiceReady(booking.id);
@@ -122,6 +233,16 @@ export class WorkService {
     }
     const complete = input.status === 'Completed' || input.postServiceStatus === 'Completed' || input.postServiceStatus === 'Issue Reported' || booking.status === 'Completed';
     const existing = await this.prisma.workOutcome.findUnique({ where: { bookingUuid: booking.id } });
+    const team = source.kind === 'team' ? source.submission : null;
+    if (team && existing) {
+      if (existing.postServiceStatus === 'Finalized') {
+        throw new ConflictException({ code: 'POST_SERVICE_FINALIZED', message: 'Finalized by office' });
+      }
+      // A retry of the driver's own last save passes even with an old version (its reply was lost).
+      if (team.baseVersion !== existing.updatedAt.toISOString() && existing.lastEditedBy !== actor) {
+        throw changedByOffice(await this.teamView(booking));
+      }
+    }
     if (existing?.status === 'COMPLETED' && !complete) throw new ConflictException('Completed work cannot be reopened through this form');
     const requestedPostServiceStatus = String(input.postServiceStatus ?? 'Pending Review');
     const postServiceStatus = issueReported
@@ -132,20 +253,38 @@ export class WorkService {
           ? 'Completed'
           : requestedPostServiceStatus;
     const commandId = existing?.confirmCommandId ?? (complete ? randomUUID() : null);
-    await this.prisma.workOutcome.upsert({ where: { bookingUuid: booking.id }, create: {
-      bookingUuid: booking.id, bookingIdAlias: booking.bookingId, bookingNo: booking.bookingNo,
-      client: booking.client, service: booking.service, serviceDate: booking.date,
-      amountDue: booking.amount === null ? null : String(booking.amount),
-      status: complete ? 'PENDING' : 'DRAFT', postServiceStatus, arrivalTime,
-      additionalMaterials: additionalMaterials as string[], issueReported, issueDetails, completionNotes,
-      finalizedBy: complete ? actor : null, finalizedAt: complete ? new Date() : null,
-      confirmCommandId: commandId, bookingVersion: complete ? booking.version : null,
-    }, update: {
+    // Only the web save makes someone the finalizer; Daily Sales drafts belong to that person
+    // (spec bms/0022). A driver's form or an Admin retry leaves it as it was.
+    const finalizes = complete && source.kind === 'web';
+    const fields = {
       postServiceStatus, arrivalTime, additionalMaterials: additionalMaterials as string[],
       issueReported, issueDetails, completionNotes,
-      ...(complete && { finalizedBy: actor, finalizedAt: new Date(), confirmCommandId: commandId,
+      ...(source.kind !== 'retry' && { lastEditedBy: actor }),
+      ...(team && { submittedBy: actor, submittedAt: team.submittedAt,
+        reportedPaymentMethod: team.reportedPaymentMethod, reportedAddOnPayment: team.reportedAddOnPayment }),
+    };
+    const update = {
+      ...fields,
+      ...(complete && { confirmCommandId: commandId,
         bookingVersion: existing?.status === 'PENDING' ? existing.bookingVersion : booking.version }),
-    } });
+      ...(finalizes && { finalizedBy: actor, finalizedAt: new Date() }),
+    };
+    if (team && existing) {
+      // Saved only if nobody changed the record since it was read above.
+      const { count } = await this.prisma.workOutcome.updateMany({
+        where: { bookingUuid: booking.id, updatedAt: existing.updatedAt }, data: update,
+      });
+      if (!count) throw changedByOffice(await this.teamView(booking));
+    } else {
+      await this.prisma.workOutcome.upsert({ where: { bookingUuid: booking.id }, create: {
+        bookingUuid: booking.id, bookingIdAlias: booking.bookingId, bookingNo: booking.bookingNo,
+        client: booking.client, service: booking.service, serviceDate: booking.date,
+        amountDue: booking.amount === null ? null : String(booking.amount),
+        status: complete ? 'PENDING' : 'DRAFT', ...fields,
+        finalizedBy: finalizes ? actor : null, finalizedAt: finalizes ? new Date() : null,
+        confirmCommandId: commandId, bookingVersion: complete ? booking.version : null,
+      }, update });
+    }
     if (complete && existing?.status !== 'COMPLETED') {
       let outcome = await this.prisma.workOutcome.findUniqueOrThrow({ where: { bookingUuid: booking.id } });
       try {
@@ -177,6 +316,6 @@ export class WorkService {
         await queueNotifications(tx, postServiceReadyNotices({ ...done, bookingUuid: booking.id }));
       });
     }
-    return this.get(booking.id);
+    return team ? this.teamView(await this.bookings.get(booking.id)) : this.get(booking.id);
   }
 }

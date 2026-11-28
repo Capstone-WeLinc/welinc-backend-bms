@@ -1,13 +1,14 @@
-import { ConflictException, Controller, Get, Headers, Param, Post, Body, UnauthorizedException } from '@nestjs/common';
+import { ConflictException, Controller, Get, Headers, Param, Post, Body, Query, UnauthorizedException } from '@nestjs/common';
 import { timingSafeEqual } from 'node:crypto';
 import { PrismaService } from '../prisma.service';
 import { DispatchService } from './dispatch.service';
+import { TeamJobOrdersService } from './team-job-orders';
 import { queueNotifications } from '../notifications/notification-outbox';
 import { crewAccounts, tripChangedNotices } from '../notifications/dispatch-notices';
 
 @Controller('internal/dispatch')
 export class InternalDispatchController {
-  constructor(private readonly prisma: PrismaService, private readonly dispatch: DispatchService) {}
+  constructor(private readonly prisma: PrismaService, private readonly dispatch: DispatchService, private readonly team: TeamJobOrdersService) {}
   private authenticate(key: string) {
     const expected = process.env.BMS_INTERNAL_SERVICE_KEY;
     if (!expected || expected.length < 32 || !key || Buffer.byteLength(key) !== Buffer.byteLength(expected) ||
@@ -32,6 +33,15 @@ export class InternalDispatchController {
   async tracking(@Param('bookingUuid') bookingUuid: string, @Headers('x-bms-service-key') key: string) {
     this.authenticate(key);
     return this.dispatch.tracking(bookingUuid);
+  }
+  /**
+   * The bookings a login works on as driver and as helper (spec bms/0022). Completion uses the
+   * driver list to accept a post-service form only from the assigned driver.
+   */
+  @Get('team-bookings')
+  async teamBookings(@Query('userId') userId: string, @Headers('x-bms-service-key') key: string) {
+    this.authenticate(key);
+    return this.team.teamBookings(String(userId ?? ''));
   }
   @Get('post-service-ready')
   async postServiceReady(@Headers('x-bms-service-key') key: string) {

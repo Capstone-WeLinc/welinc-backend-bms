@@ -19,6 +19,22 @@ export class DispatchClient {
     } catch { throw new ServiceUnavailableException('Dispatch readiness unavailable'); }
   }
 
+  /** The bookings this login is the assigned driver of (spec bms/0022). */
+  async driverBookingUuids(userId: string): Promise<string[]> {
+    const key = process.env.BMS_INTERNAL_SERVICE_KEY;
+    if (!key || key.length < 32) throw new ServiceUnavailableException('Internal service identity is not configured');
+    const root = process.env.DISPATCH_API_URL || 'http://127.0.0.1:3022';
+    try {
+      const response = await fetch(new URL(`/internal/dispatch/team-bookings?userId=${encodeURIComponent(userId)}`, root), {
+        headers: { 'x-bms-service-key': key }, signal: AbortSignal.timeout(8000),
+      });
+      if (!response.ok) throw new Error('Dispatch team bookings unavailable');
+      const body = await response.json() as { driver?: unknown };
+      if (!Array.isArray(body.driver) || body.driver.some((id) => typeof id !== 'string')) throw new Error('Invalid team bookings response');
+      return body.driver;
+    } catch { throw new ServiceUnavailableException('Dispatch assignment check unavailable'); }
+  }
+
   async snapshot(bookingUuid: string): Promise<DispatchSnapshot> {
     const key = process.env.BMS_INTERNAL_SERVICE_KEY;
     if (!key || key.length < 32) throw new ServiceUnavailableException('Internal service identity is not configured');

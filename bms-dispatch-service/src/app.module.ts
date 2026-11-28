@@ -20,12 +20,13 @@ import { CrewLeaveController } from './crew-leave/crew-leave.controller';
 import { InternalCrewLeaveController } from './crew-leave/internal-crew-leave.controller';
 import { CrewLeaveService } from './crew-leave/crew-leave.service';
 import { NotificationOutbox } from './notifications/notification-outbox';
+import { TeamJobOrdersService } from './dispatch/team-job-orders';
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateEnv }), BmsAuthModule],
   controllers: [HealthController, DispatchController, SchedulingController, JobOrderController, FleetController, AuditController, InternalDispatchController, CrewLeaveController, InternalCrewLeaveController],
   providers: [PrismaService, NotificationOutbox, DispatchAuthGuard, DispatchService,
     { provide: FLEET_PROVIDER, useClass: VmmsFleetProvider },
-    FleetService, BookingClient, AuditProvider, CrewLeaveService],
+    FleetService, BookingClient, AuditProvider, CrewLeaveService, TeamJobOrdersService],
 })
 export class AppModule {}
