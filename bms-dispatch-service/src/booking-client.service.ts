@@ -5,6 +5,11 @@ export type BookingRecord = {
   date: string; status: string; version: number; amount: string | number | null;
   operationalHold?: boolean; paymentHold?: boolean; permitRequired?: boolean;
   pickupAddress: string | null; deliveryAddress: string | null; preferredTime: string | null;
+  // Read by the team member job order cards (spec bms/0022); the booking service sends the full row.
+  contact?: string | null; pickupLandmark?: string | null; deliveryLandmark?: string | null;
+  estimatedItems?: number | null; itemDetails?: string | null; specialInstructions?: string | null;
+  hasInsurance?: boolean; requestedPaymentMethod?: string | null; downpayment?: string | number | null;
+  additionalServicesAvailed?: unknown;
 };
 @Injectable()
 export class BookingClient {

@@ -23,6 +23,14 @@ model WorkOutcome {
   completionNotes   String?  @map("completion_notes")
   finalizedBy       String?  @map("finalized_by") @db.Uuid
   finalizedAt       DateTime? @map("finalized_at") @db.Timestamptz(6)
+  // A driver's form from the mobile app (spec bms/0022). The driver is never stored as finalizedBy.
+  submittedBy       String?  @map("submitted_by") @db.Uuid
+  submittedAt       DateTime? @map("submitted_at") @db.Timestamptz(6)
+  // What the driver reports the client paid with; it only pre-fills Daily Sales, never a collection.
+  reportedPaymentMethod String? @map("reported_payment_method") @db.VarChar(20)
+  reportedAddOnPayment  String? @map("reported_add_on_payment") @db.VarChar(20)
+  // Who saved last (driver or web), so a driver's resubmission can't silently replace an office edit.
+  lastEditedBy      String?  @map("last_edited_by") @db.Uuid
   confirmCommandId  String?  @map("confirm_command_id") @db.Uuid
   bookingVersion    Int?     @map("booking_version")
   lastError         String?  @map("last_error")

@@ -36,6 +36,11 @@ function suggestedMethod(value?: string | null) {
   return null;
 }
 
+/** A driver's reported method, when it is one Daily Sales accepts (spec bms/0022). */
+export function reportedDraftMethod(value?: string | null) {
+  return value && METHODS.includes(value) ? value : null;
+}
+
 export type CollectionDraft = {
   bookingUuid: string; bookingId: string; bookingNo: string; clientName: string; service: string;
   completedOn: string; amount: number; method: string | null; reference: string;
@@ -167,8 +172,10 @@ export class CollectionsService {
     const ids = eligible.map((booking) => booking.id);
     const [active, work] = await Promise.all([
       this.prisma.collection.findMany({ where: { bookingUuid: { in: ids }, status: { in: ['PENDING', 'VERIFYING', 'VERIFIED'] } } }),
-      this.prisma.workOutcome.findMany({ where: { bookingUuid: { in: ids } }, select: { bookingUuid: true, finalizedAt: true, updatedAt: true, finalizedBy: true } }),
+      this.prisma.workOutcome.findMany({ where: { bookingUuid: { in: ids } }, select: { bookingUuid: true, finalizedAt: true, updatedAt: true, finalizedBy: true, reportedPaymentMethod: true } }),
     ]);
+    // What the driver reported from the mobile app comes first, then the booking request (spec bms/0022).
+    const reportedMethod = new Map(work.map((item) => [item.bookingUuid, item.reportedPaymentMethod]));
     const awaitingApproval = new Set(active.filter((item) => item.status !== 'VERIFIED').map((item) => item.bookingUuid));
     const completedOn = new Map(work.map((item) => [item.bookingUuid, manilaDate(item.finalizedAt ?? item.updatedAt)]));
     // A record belongs to the CS user who verified its Post-Service; older records without one are shared.
@@ -185,7 +192,8 @@ export class CollectionsService {
           clientName: booking.client, service: booking.service,
           completedOn: completedOn.get(booking.id) ?? booking.date,
           amount: (cents(booking.amount!) - downpaymentCents(booking) - collected) / 100,
-          method: suggestedMethod(booking.requestedPaymentMethod), reference: booking.bookingNo,
+          method: reportedDraftMethod(reportedMethod.get(booking.id)) ?? suggestedMethod(booking.requestedPaymentMethod),
+          reference: booking.bookingNo,
         };
       })
       .filter((row) => row.amount > 0)
