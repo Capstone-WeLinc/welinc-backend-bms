@@ -74,16 +74,22 @@ export class InternalDispatchController {
         await tx.dispatchJobOrder.updateMany({ where: { bookingUuid }, data: { needsUpdate: true, updatedAt: new Date() } });
       }
       if (type === 'reschedule' || type === 'cancel' || eventType === 'BOOKING_CANCEL_APPROVED') {
-        // The crew losing this trip are told (spec bms/0021)
+        const cancelled = type === 'cancel' || eventType === 'BOOKING_CANCEL_APPROVED';
         const released = await tx.dispatchAssignment.findFirst({ where: { bookingUuid, state: 'CONFIRMED' } });
-        if (released) {
+        // A cancellation tells the crew now (spec bms/0021). A reschedule remembers the team instead, and
+        // each person hears whether they stay on the trip when it is assigned again (spec bms/0023).
+        if (released && cancelled) {
           await queueNotifications(tx, tripChangedNotices({
-            eventId, bookingUuid, bookingNo: String(body.bookingNo ?? 'Your trip'),
-            cancelled: type === 'cancel' || eventType === 'BOOKING_CANCEL_APPROVED',
+            eventId, bookingUuid, bookingNo: String(body.bookingNo ?? 'Your trip'), cancelled: true,
             crew: await crewAccounts(tx, released.driverId, released.helperIds),
           }));
         }
-        await tx.dispatchAssignment.updateMany({ where: { bookingUuid, state: 'CONFIRMED' }, data: { state: 'REJECTED', lastError: null, updatedAt: new Date() } });
+        await tx.dispatchAssignment.updateMany({ where: { bookingUuid, state: 'CONFIRMED' }, data: {
+          state: 'REJECTED', lastError: null, updatedAt: new Date(),
+          ...(released && !cancelled
+            ? { releasedDriverId: released.driverId, releasedHelperIds: released.helperIds }
+            : { releasedDriverId: null, releasedHelperIds: [] }),
+        } });
         if (order) await tx.dispatchJobOrder.update({ where: { id: order.id }, data: { state: 'SUPERSEDED', status: type === 'cancel' ? 'Cancelled' : 'Pending', updatedAt: new Date() } });
       }
       return { applied: true };

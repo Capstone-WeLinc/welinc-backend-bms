@@ -22,6 +22,10 @@ model DispatchAssignment {
   releaseBookingVersion Int? @map("release_booking_version")
   bookingVersion Int? @map("booking_version")
   lastError String? @map("last_error")
+  // The team a reschedule released (spec bms/0023): kept until the booking is assigned
+  // again, so each person can be told whether they stay on the trip or were taken off it.
+  releasedDriverId  String?  @map("released_driver_id") @db.Uuid
+  releasedHelperIds String[] @default([]) @map("released_helper_ids")
   createdAt    DateTime @map("created_at") @db.Timestamptz(6)
   updatedAt    DateTime @map("updated_at") @db.Timestamptz(6)
 
