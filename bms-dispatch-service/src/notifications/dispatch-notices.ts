@@ -24,47 +24,60 @@ export async function crewAccounts(db: Db, driverId: string | null, helperIds: s
   ];
 }
 
-/** A team was confirmed: Operations distributes the job order, and each crew member hears they're on it. */
+/**
+ * A team was confirmed: Operations distributes the job order. Each person hears what happened to them
+ * (spec bms/0023), comparing the new team with the previous one (the team being replaced, or the team a
+ * reschedule released):
+ * - on both teams in the same role: `crew.rescheduled` when the date or dispatch time changed, else nothing;
+ * - only on the previous team: `crew.unassigned` (the trip was reassigned);
+ * - new, or in a new role: `crew.assigned`.
+ * With no previous team, everyone is assigned.
+ */
 export function assignedNotices(input: {
   booking: Trip; jobOrderNo: string; dispatchTime: string | null; commandId: string; actorId: string | null;
-  crew: CrewMember[]; removed: CrewMember[];
+  crew: CrewMember[]; previous: CrewMember[] | null; scheduleChanged: boolean;
 }): NotificationInput[] {
   const { booking, commandId, actorId } = input;
   const when = `${booking.date}${input.dispatchTime ? `, dispatch at ${input.dispatchTime}` : ''}`;
+  const key = (member: CrewMember) => `${member.userId}:${member.role}`;
+  const before = new Set((input.previous ?? []).map(key));
+  const after = new Set(input.crew.map(key));
+  const kept = input.crew.filter((member) => before.has(key(member)));
+  const added = input.crew.filter((member) => !before.has(key(member)));
+  // A person who only changed role is told about the new role, not that they left the trip.
+  const stillOn = new Set(input.crew.map((member) => member.userId));
+  const removed = (input.previous ?? []).filter((member) => !after.has(key(member)) && !stillOn.has(member.userId));
   return [
     {
       dedupeKey: `joborder.ready:${booking.bookingUuid}:${commandId}`, role: 'OPERATIONS', actorId,
       kind: 'joborder.ready', title: 'Job order ready to distribute',
       message: `${input.jobOrderNo} · ${trip(booking)} — ${booking.date}`, href: '/operations/job-order', bookingUuid: booking.bookingUuid,
     },
-    ...input.crew.map((member) => ({
+    ...added.map((member) => ({
       dedupeKey: `crew.assigned:${booking.bookingUuid}:${commandId}:${member.userId}`, userId: member.userId, actorId,
       kind: 'crew.assigned', title: member.role === 'DRIVER' ? "You're assigned as the driver of a trip" : "You're assigned as a helper on a trip",
       message: `${trip(booking)} — ${when}`, bookingUuid: booking.bookingUuid,
     })),
-    ...input.removed.map((member) => ({
+    ...(input.scheduleChanged ? kept : []).map((member) => ({
+      dedupeKey: `crew.rescheduled:${booking.bookingUuid}:${commandId}:${member.userId}`, userId: member.userId, actorId,
+      kind: 'crew.rescheduled', title: 'Your trip has a new schedule',
+      message: `${booking.bookingNo} — ${when}`, bookingUuid: booking.bookingUuid,
+    })),
+    ...removed.map((member) => ({
       dedupeKey: `crew.unassigned:${booking.bookingUuid}:${commandId}:${member.userId}`, userId: member.userId, actorId,
-      kind: 'crew.unassigned', title: 'You were removed from a trip',
+      kind: 'crew.unassigned', title: 'Your trip was reassigned',
       message: `${trip(booking)} — ${booking.date}. Another team now has it.`, bookingUuid: booking.bookingUuid,
     })),
   ];
 }
 
-/** The job order went out: the crew can start the trip. */
-export function distributedNotices(input: {
-  booking: Trip; jobOrderNo: string; dispatchTime: string | null; commandId: string; crew: CrewMember[];
-}): NotificationInput[] {
-  const { booking } = input;
-  return input.crew.map((member) => ({
-    dedupeKey: `crew.dispatched:${booking.bookingUuid}:${input.commandId}:${member.userId}`, userId: member.userId,
-    kind: 'crew.dispatched', title: 'Job order distributed',
-    message: `${input.jobOrderNo} · ${trip(booking)} — ${booking.date}${input.dispatchTime ? `, dispatch at ${input.dispatchTime}` : ''}`,
-    bookingUuid: booking.bookingUuid,
-  }));
-}
+// Distributing a job order sends the team no notice: it is a web status for the office (spec bms/0023).
 
-/** Admin approved a cancellation or reschedule: the released crew are off that trip. */
-export function tripChangedNotices(input: { eventId: string; bookingUuid: string; bookingNo: string; cancelled: boolean; crew: CrewMember[] }): NotificationInput[] {
+/**
+ * Admin approved a cancellation: the released crew are off that trip. A reschedule sends nothing here;
+ * the team hears when the booking is assigned again (spec bms/0023).
+ */
+export function tripChangedNotices(input: { eventId: string; bookingUuid: string; bookingNo: string; cancelled: true; crew: CrewMember[] }): NotificationInput[] {
   return input.crew.map((member) => ({
     dedupeKey: `crew.trip_changed:${input.eventId}:${member.userId}`, userId: member.userId,
     kind: 'crew.trip_changed', title: input.cancelled ? 'Your trip was cancelled' : 'Your trip was rescheduled',

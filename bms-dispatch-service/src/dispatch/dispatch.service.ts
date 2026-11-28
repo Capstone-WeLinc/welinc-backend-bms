@@ -6,7 +6,7 @@ import { BookingClient, BookingRecord } from '../booking-client.service';
 import { FleetService } from '../fleet/fleet.service';
 import { checkBookingTiming, worstTiming, type TimedBooking, type TimingResult } from './assignment-timing';
 import { queueNotifications } from '../notifications/notification-outbox';
-import { assignedNotices, crewAccounts, distributedNotices } from '../notifications/dispatch-notices';
+import { assignedNotices, crewAccounts } from '../notifications/dispatch-notices';
 
 const TRAVEL_CACHE_MS = 6 * 60 * 60 * 1000;
 
@@ -335,8 +335,13 @@ export class DispatchService {
     const jobOrderTruck = vehicle.plateNumber ?? 'Subcon';
     const jobOrderTeam = (assignedDriverName ?? (helperNames.join(', ') || 'Subcon')).slice(0, 100);
     let assignment = await this.prisma.dispatchAssignment.findUnique({ where: { bookingUuid: id } });
-    // A reassignment: whoever drops off this trip is told (spec bms/0021)
-    const previousCrew = assignment?.state === 'CONFIRMED' ? { driverId: assignment.driverId, helperIds: assignment.helperIds } : null;
+    // The team before this assignment, to tell each person what changed for them (spec bms/0023): the
+    // confirmed team being replaced, or the team a reschedule released. Read before the row is updated.
+    const previousCrew = assignment?.state === 'CONFIRMED'
+      ? { driverId: assignment.driverId, helperIds: assignment.helperIds, serviceDate: assignment.serviceDate, dispatchTime: assignment.dispatchTime }
+      : assignment && (assignment.releasedDriverId || assignment.releasedHelperIds.length)
+        ? { driverId: assignment.releasedDriverId, helperIds: assignment.releasedHelperIds, serviceDate: assignment.serviceDate, dispatchTime: assignment.dispatchTime }
+        : null;
     if (!assignment && (!['For Plotting', 'Rescheduled'].includes(booking.status) || booking.operationalHold || booking.paymentHold)) {
       throw new ConflictException('Booking is no longer ready for assignment');
     }
@@ -417,7 +422,9 @@ export class DispatchService {
     await this.prisma.$transaction(async (tx) => {
       const current = await tx.dispatchAssignment.findUniqueOrThrow({ where: { id } });
       if (current.state !== 'CONFIRMED') {
-        await tx.dispatchAssignment.update({ where: { id }, data: { state: 'CONFIRMED', lastError: null } });
+        await tx.dispatchAssignment.update({ where: { id }, data: {
+          state: 'CONFIRMED', lastError: null, releasedDriverId: null, releasedHelperIds: [],
+        } });
         const [{ value }] = await tx.$queryRaw<Array<{ value: bigint }>>`SELECT nextval('dispatch_job_order_no_seq') AS value`;
         const order = await tx.dispatchJobOrder.upsert({ where: { bookingUuid: id },
           create: {
@@ -432,14 +439,12 @@ export class DispatchService {
             team: jobOrderTeam, status: 'Pending', state: 'ACTIVE', updatedAt: new Date() },
         });
         const crew = await crewAccounts(tx, current.driverId, current.helperIds);
-        const kept = new Set(crew.map((member) => member.userId));
-        const removed = previousCrew
-          ? (await crewAccounts(tx, previousCrew.driverId, previousCrew.helperIds)).filter((member) => !kept.has(member.userId))
-          : [];
+        const previous = previousCrew ? await crewAccounts(tx, previousCrew.driverId, previousCrew.helperIds) : null;
         await queueNotifications(tx, assignedNotices({
           booking: { bookingUuid: id, bookingNo: booking.bookingNo, client: booking.client, date: booking.date },
           jobOrderNo: order.jobOrderNo, dispatchTime: current.dispatchTime, commandId: current.confirmCommandId ?? current.id,
-          actorId: actor ?? null, crew, removed,
+          actorId: actor ?? null, crew, previous,
+          scheduleChanged: !!previousCrew && (previousCrew.serviceDate !== booking.date || previousCrew.dispatchTime !== current.dispatchTime),
         }));
       }
     });
@@ -536,17 +541,8 @@ export class DispatchService {
       throw new ConflictException('A driver and at least one helper must be assigned before a job order can be distributed');
     }
     const alreadyDistributed = item.status === 'Distributed';
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const saved = await tx.dispatchJobOrder.update({ where: { id }, data: { status: 'Distributed', updatedAt: new Date() } });
-      if (!alreadyDistributed) {
-        await queueNotifications(tx, distributedNotices({
-          booking: { bookingUuid: item.bookingUuid, bookingNo: booking.bookingNo, client: booking.client, date: booking.date },
-          jobOrderNo: saved.jobOrderNo, dispatchTime: assignment.dispatchTime, commandId: assignment.confirmCommandId ?? assignment.id,
-          crew: await crewAccounts(tx, assignment.driverId, assignment.helperIds),
-        }));
-      }
-      return saved;
-    });
+    // Distribution is a web status for the office; the team was already told when assigned (spec bms/0023).
+    const updated = await this.prisma.dispatchJobOrder.update({ where: { id }, data: { status: 'Distributed', updatedAt: new Date() } });
     if (!alreadyDistributed) {
       const key = process.env.BMS_INTERNAL_SERVICE_KEY;
       const root = process.env.BOOKING_API_URL || 'http://127.0.0.1:3021';

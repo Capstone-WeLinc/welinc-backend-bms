@@ -83,7 +83,11 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     const [rows, unread] = await Promise.all([
       this.prisma.notification.findMany({
         where, orderBy: { createdAt: 'desc' }, take: LIST_LIMIT,
-        include: { reads: { where: { userId: viewer.userId }, select: { readAt: true } } },
+        include: {
+          reads: { where: { userId: viewer.userId }, select: { readAt: true } },
+          // The mobile app opens and names the trip a notice is about (spec bms/0023).
+          booking: { select: { bookingNo: true } },
+        },
       }),
       this.prisma.notification.count({ where: { ...where, reads: { none: { userId: viewer.userId } } } }),
     ]);
@@ -92,6 +96,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
       items: rows.map((row) => ({
         id: row.id, kind: row.kind, title: row.title, message: row.message, href: row.href,
         createdAt: row.createdAt.toISOString(), read: row.reads.length > 0,
+        bookingUuid: row.bookingUuid, bookingNo: row.booking?.bookingNo ?? null,
       })),
     };
   }

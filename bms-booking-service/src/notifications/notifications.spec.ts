@@ -67,6 +67,20 @@ describe('Reading notifications', () => {
     expect(await notifications.markAllRead({ userId: ME, roles: ['ADMIN'] })).toEqual({ read: 2 });
     expect(created).toHaveLength(2);
   });
+
+  it('lists each notice with its booking, for the mobile app (spec bms/0023)', async () => {
+    const base = { kind: 'crew.assigned', title: 'T', message: 'M', href: null, createdAt: new Date('2026-12-01T00:00:00Z'), reads: [] };
+    const rows = [
+      { ...base, id: 'n1', bookingUuid: BOOKING.id, booking: { bookingNo: BOOKING.bookingNo } },
+      { ...base, id: 'n2', bookingUuid: null, booking: null, reads: [{ readAt: new Date() }] },
+    ];
+    const prisma = { notification: { findMany: jest.fn(async () => rows), count: jest.fn(async () => 1) } };
+    const result = await new NotificationsService(prisma as never).list({ userId: ME, roles: ['DRIVER'] });
+    expect(result.items).toEqual([
+      expect.objectContaining({ id: 'n1', bookingUuid: BOOKING.id, bookingNo: 'BN-2026-0001', read: false }),
+      expect.objectContaining({ id: 'n2', bookingUuid: null, bookingNo: null, read: true }),
+    ]);
+  });
 });
 
 describe('Booking notices', () => {
